@@ -216,6 +216,10 @@ of the shell arithmetic, so the two implementations have to agree.
 off the tty. It opens a window that takes keyboard focus while it runs, and
 stray keystrokes land in that window, so run it only when you are not typing.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) before changing the hook — the rule about
+testing `PROMPT_COMMAND` against a real interactive shell was learned the hard
+way.
+
 ## Verified behavior
 
 Measured on gnome-terminal 3.44 / VTE 0.68 (Ubuntu 22.04), the environment this
@@ -320,3 +324,8 @@ backslash, then the text `033` — so only the first sequence in a batched write
 survives and the remainder prints to the screen as garbage. The mock terminal
 now records every byte that falls outside a well-formed sequence and the tests
 assert there are none.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The copyright line reads "livery contributors";
+set it to whoever actually holds the copyright before publishing.

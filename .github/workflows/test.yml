@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  headless:
+    # ubuntu only: macOS runners ship bash 3.2, which has no associative arrays
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versions
+        run: |
+          bash --version | head -1
+          python3 --version
+      - name: Syntax check
+        run: |
+          bash -n livery.sh
+          for f in test/*.sh; do bash -n "$f"; done
+          python3 -m py_compile test/*.py
+      - name: Headless suites
+        # opens no windows; the real-terminal suite needs a display and is skipped
+        run: ./test/run-tests.sh
