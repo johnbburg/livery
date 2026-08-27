@@ -19,6 +19,13 @@ all in your terminal.
 <paste `livery doctor` output here>
 ```
 
+If livery will not load at all — a shell other than bash 4+, for instance — run
+the standalone probe instead, which needs no installation:
+
+```
+sh tools/terminal-probe.sh
+```
+
 ## Environment
 
 - Terminal emulator and version:

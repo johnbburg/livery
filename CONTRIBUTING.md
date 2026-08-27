@@ -48,6 +48,16 @@ measured WCAG ratio per colour, and `livery audit` checks every configured rule
 plus how far apart the backgrounds are perceptually (CIELAB ΔE). Both are
 cheaper than an opinion and they disagree with intuition often enough to matter.
 
+## Checking terminal support
+
+`tools/terminal-probe.sh` is deliberately POSIX `sh` with no arrays, no
+`[[ ]]` and no `read -t`/`-d`, so it runs under sh, zsh and bash 3.2. It exists
+so the *terminal* question can be answered separately from the *shell* question
+— useful when someone on a shell livery does not support wants to know whether
+porting is even worthwhile.
+
+Keep it dependency-free and keep it restoring what it changes.
+
 ## Shell support
 
 bash 4+ only. The hook uses associative arrays, `printf -v`, `PROMPT_COMMAND`

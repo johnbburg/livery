@@ -15,8 +15,16 @@ profile. It works by writing OSC escape sequences to the tty.
 - **bash only.** The hook installs itself into `PROMPT_COMMAND` and `PS1`.
   There is no zsh or fish port.
 - **A terminal that implements `OSC 4`, `10`, `11`, `12` and the matching
-  `104`/`110`/`111`/`112` resets.** `livery doctor` probes for all of them and
-  tells you what your terminal actually honours.
+  `104`/`110`/`111`/`112` resets.** Check before installing anything:
+
+  ```sh
+  sh tools/terminal-probe.sh
+  ```
+
+  That script is plain POSIX `sh` — it runs under sh, zsh, and macOS's bash 3.2,
+  needs livery neither installed nor sourced, and restores every colour it
+  touches. Use it to answer the terminal question independently of the shell
+  question. `livery doctor` does the same thing once livery is running.
 - **Developed and verified on gnome-terminal 3.44 / VTE 0.68 (Ubuntu 22.04).**
   The escape sequences are standard and it should work on other terminals that
   implement them, but no others have been tested. Run `livery doctor` first.
