@@ -1,0 +1,96 @@
+# livery — per-project terminal colors
+# Installed to ~/.config/livery/livery.conf
+#
+# Two directives, nothing else. No shell code is ever evaluated from this file.
+#
+#   set  <option> <value>
+#   rule <path>   [key=value ...]
+
+# ---------------------------------------------------------------- options ----
+set enable      on          # on | off
+set mode        dark        # dark = accent hue pinned dark (recommended) | tint = blend
+set lightness   10          # mode=dark: HSL lightness % of derived backgrounds
+set saturation  70          # mode=dark: cap on saturation, keeps hues from shouting
+set alpha       18          # mode=tint only: how far to blend toward the accent
+set min_contrast 700        # `livery test` flags anything under 7.00:1
+set fade_ms     260         # fade duration per transition
+set fade_steps  16          # frames in that fade (1 = instant snap)
+set auto        on          # auto-assign a color to unlisted projects under auto_root
+set auto_root   ~/projects  # where "a project" means "a directory directly under here"
+set title       on          # put just the project name in the tab label
+
+# Your terminal profile's own background. livery queries the terminal for this
+# on startup, but pinning it is recommended: it skips the query and makes the
+# derived colours reproducible. Find your value with `livery status`, which also
+# warns when a pinned value disagrees with what the terminal reports.
+# (Ubuntu's default gnome-terminal purple, for example, is #300a24.)
+# set default_bg  #300a24
+
+# ------------------------------------------------------------------ rules ----
+# Longest matching path prefix wins, so a subdirectory rule overrides its parent.
+#
+#   theme=NAME       load ~/.config/livery/themes/NAME.conf  (full colour set)
+#   accent=#rrggbb   derive the background from this hue
+#   lightness=NN     how dark the derived background is (HSL L%)
+#   saturation=NN    cap on the derived background's saturation
+#   bg=#rrggbb       set the background outright, no derivation
+#   fg=#rrggbb       foreground (plain text)
+#   bold=#rrggbb     bold foreground
+#   cursor=#rrggbb   cursor
+#   ansi0..ansi15    the 16 ANSI palette entries — these are what colour your
+#                    prompt, since PS1 uses ANSI codes rather than the plain
+#                    foreground. ansi2/ansi10 = green, ansi4/ansi12 = blue.
+#   fade_ms=NN       override the fade duration for this rule
+#   label=NAME       name used for the tab title / `livery status`
+#
+# Inline keys override the theme file, so `theme=X ansi4=#79b8ff` is one theme
+# with one colour changed. `livery test <dir>` prints the resolved set with a
+# measured contrast ratio per colour.
+
+# --------------------------------------------------------- worked example ----
+# Below is the shape that works well for a set of related projects: one shared
+# theme carries a readable text palette, and each project's accent supplies the
+# background hue. `accent` beats the theme's own `bg` for exactly this reason.
+#
+# Where to find a project's brand colour, if it has one: for a Drupal site
+# using the Gesso theme, `source/00-config/_design-tokens.artifact.scss` (look
+# for `primary: background:`, or a `base:` under a colour name); older Gesso
+# keeps it in `sass/**/_variables.scss`; a bespoke theme may simply declare
+# `$primary-color`. Otherwise pick any hue you like.
+#
+# Two problems show up once you have more than a handful, and `livery audit`
+# reports both:
+#
+#   * Brands collide. Blue is popular; four blue brands inside a 30 degree arc
+#     all look the same once darkened. Rotate hues apart until every pair is at
+#     least ~25 degrees distinct -- fidelity you lose here buys you the ability
+#     to tell windows apart, which is the entire point.
+#   * Lightness is the second axis, and the only one available when two
+#     projects legitimately share a brand (two sites for one client, or two
+#     checkouts of one repo). Give them the same accent and different
+#     `lightness`.
+#
+# Prompt colours: a stock PS1 paints user@host with bold green and the path with
+# bold blue, so overriding those slots puts the project identity in the text as
+# well as the background. Set BOTH the normal and bright entry of each pair --
+# ansi2+ansi10, ansi4+ansi12 -- because the codes are bold and VTE chooses
+# between them depending on its bold-is-bright setting. Choose the values by
+# solving rather than by eye: take a hue from the brand and use the lowest
+# lightness that still clears your contrast target against that project's
+# background. Note this also recolours `ls` directories and executables, and
+# some git output, which use the same slots.
+
+rule ~/projects/alpha    theme=high-contrast-dark accent=#0058A4 lightness=9
+rule ~/projects/beta     theme=high-contrast-dark accent=#B8382F lightness=8
+rule ~/projects/gamma    theme=high-contrast-dark accent=#612A60 lightness=8
+
+# same client, two sites: one brand, separated by lightness alone
+rule ~/projects/delta/public   theme=high-contrast-dark accent=#00666B lightness=6  label=delta-public
+rule ~/projects/delta/intranet theme=high-contrast-dark accent=#00666B lightness=11 label=delta-intranet
+
+# project identity in the prompt text too, not just the background
+rule ~/projects/epsilon  theme=high-contrast-dark accent=#0014A4 lightness=10 ansi4=#949FF0 ansi12=#949FF0 ansi2=#C0A21B ansi10=#C0A21B
+
+# A deliberately loud, unmissable scheme — the reason to have explicit rules
+# at all. Anything you must not fat-finger gets its own alarming color.
+# rule ~/projects/some-prod-checkout  bg=#2a0708 fg=#ffd7d7 ansi4=#ff9aa2 cursor=#ff5555
