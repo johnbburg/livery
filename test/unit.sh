@@ -48,4 +48,21 @@ el=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%d", (b-a)*1000}')
 if (( el >= 180 && el <= 320 )); then pass=$((pass+1)); printf '  ok   %-42s %sms\n' "slept ~200ms" "$el"
 else fail=$((fail+1)); printf '  FAIL %-42s %sms\n' "slept ~200ms" "$el"; fi
 
+echo "== per-rule alpha (tint mode) =="
+# alpha must be accepted as a rule key and beat the global value; it was
+# silently rejected as "unknown rule key" while tint used the global alpha.
+_cfg=$(mktemp); _dir=$(mktemp -d)
+printf 'set default_bg #300a24\nset mode tint\nset alpha 20\nset auto off\nrule %s accent=#98c379 alpha=40\n' "$_dir" > "$_cfg"
+LIVERY_CONF="$_cfg" _livery_load_conf 2>/dev/null
+warn=$(LIVERY_CONF="$_cfg" _livery_load_conf 2>&1 >/dev/null)
+t "alpha is not rejected as unknown" "" "$warn"
+_livery_resolve "$_dir" >/dev/null 2>&1
+t "per-rule alpha=40 beats global 20" "$(_livery_blend 300a24 98c379 40)" "${_LIVERY_T[bg]}"
+printf 'set default_bg #300a24\nset mode tint\nset alpha 20\nset auto off\nrule %s accent=#98c379 alpha=200\n' "$_dir" > "$_cfg"
+LIVERY_CONF="$_cfg" _livery_load_conf 2>/dev/null
+_livery_resolve "$_dir" >/dev/null 2>&1
+t "alpha>100 is clamped, not left invalid" "$(_livery_blend 300a24 98c379 100)" "${_LIVERY_T[bg]}"
+t "clamped alpha yields a valid 6-digit colour" "6" "${#_LIVERY_T[bg]}"
+rm -rf "$_cfg" "$_dir"
+
 echo; printf 'pass=%d fail=%d\n' "$pass" "$fail"; exit $(( fail > 0 ))

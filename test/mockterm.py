@@ -150,6 +150,11 @@ def main():
         os.waitpid(pid, 0)
     except ChildProcessError:
         pass
+    # feed() holds back the last 64 bytes in case a sequence is split across
+    # reads. Flush that remainder, or the tail of every run is silently lost --
+    # which quietly breaks any assertion about trailing output.
+    term.stray += term.buf
+    term.buf = b''
 
     print(json.dumps({'marks': term.marks, 'frames': term.frames, 'final': term.cur,
                       'stray': term.stray.decode('utf-8', 'replace')}, indent=1))

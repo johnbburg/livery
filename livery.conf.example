@@ -33,6 +33,7 @@ set title       on          # put just the project name in the tab label
 #   accent=#rrggbb   derive the background from this hue
 #   lightness=NN     how dark the derived background is (HSL L%)
 #   saturation=NN    cap on the derived background's saturation
+#   alpha=NN         mode=tint only: how far to blend toward the accent
 #   bg=#rrggbb       set the background outright, no derivation
 #   fg=#rrggbb       foreground (plain text)
 #   bold=#rrggbb     bold foreground

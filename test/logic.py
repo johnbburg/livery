@@ -36,7 +36,9 @@ def blend(base, accent, pct):
     return hexs(tuple((b*(100-pct) + a*pct + 50)//100 for b, a in zip(rgb(base), rgb(accent))))
 
 THEME = {
-    'bg': '0b0f14', 'fg': 'dfe6ee', 'cursor': 'ffcc66', 'bold': 'ffffff',
+    # bold must differ from the mock's default (ffffff) or the assertion on it
+    # is a tautology that cannot fail.
+    'bg': '0b0f14', 'fg': 'dfe6ee', 'cursor': 'ffcc66', 'bold': 'fafbfc',
     **{f'ansi{i}': v for i, v in enumerate([
         '20262e', 'ff8080', '8fdf82', 'ffd479', '79b8ff', 'e59bff', '6fe0e0', 'c8d1db',
         '5a6472', 'ff9aa2', 'b6f0a8', 'ffe6a8', 'a8d3ff', 'f0c2ff', 'a6f0f0', 'ffffff'])},
@@ -44,9 +46,12 @@ THEME = {
 
 def build_fixture(root):
     for d in ('proj-a/sub', 'proj-b', 'proj-loud', 'proj-theme', 'proj-override',
-              'proj-dark', 'proj-theme-accent', 'proj-theme-bg',
+              'proj-dark', 'proj-theme-accent', 'proj-theme-bg', 'proj-hueonly',
+              'proj-fgonly', 'proj-badbg',
               'auto/alpha-proj', 'auto/beta-proj', 'themes'):
         os.makedirs(os.path.join(root, d), exist_ok=True)
+    with open(os.path.join(root, 'themes', 'hueonly.conf'), 'w') as fh:
+        fh.write('# supplies a hue and nothing else\naccent  #61afef\nlightness  9\n')
     with open(os.path.join(root, 'themes', 'tst.conf'), 'w') as fh:
         fh.write('# a theme, with comments and blank lines to parse past\n\n')
         for k, v in THEME.items():
@@ -68,6 +73,9 @@ rule {root}/proj-override  theme=tst ansi4=#112233 fg=#eeeeee
 rule {root}/proj-dark      accent=#61afef lightness=10 saturation=70
 rule {root}/proj-theme-accent  theme=tst accent=#61afef
 rule {root}/proj-theme-bg      theme=tst bg=#010203
+rule {root}/proj-hueonly       theme=hueonly
+rule {root}/proj-fgonly        fg=#ff0000
+rule {root}/proj-badbg         bg=#zzzzzz fg=#00ff00
 """)
     return conf
 
@@ -106,8 +114,15 @@ def main():
         chk('a colour we never set is absent', False, '123456' in rep['frames']['bg'])
 
         print('== no stray bytes: every write is a well-formed sequence ==')
+        # livery's own diagnostics on stderr are legitimate output -- the
+        # fixture deliberately includes an unparseable colour to check the
+        # warning. Everything else outside a sequence is a defect.
         stray = rep.get('stray', '')
-        chk('nothing outside an OSC sequence reached the terminal', '', stray.strip())
+        noise = '\n'.join(l for l in stray.splitlines()
+                           if l.strip() and not l.startswith('livery:'))
+        chk('nothing outside an OSC sequence reached the terminal', '', noise.strip())
+        chk('the invalid colour did warn', True,
+            any(l.startswith('livery: bad colour') for l in stray.splitlines()))
         chk('no mangled "033]" from %b escape collapsing', False, '033]' in stray)
 
         print('== mode=dark: accent supplies hue, lightness is pinned ==')
@@ -200,6 +215,28 @@ def main():
         chk('hue preserved (within 4 deg)', True, min(abs(h-ah), 360-abs(h-ah)) <= 4)
         chk('saturation capped at 70', True, s_ <= 72)
         chk('darker than the profile default', True, lumin(d['bg']) < lumin(DEFAULT_BG))
+
+        print('== REGRESSION: a partial theme must not inherit the previous palette ==')
+        # A theme supplying only a hue documents that it leaves fg and the
+        # palette alone. Emitting only the keys present would silently keep the
+        # PREVIOUS project's full palette instead -- wrong, and invisible.
+        bef, aft = m['before_partial'], m['after_partial']
+        chk('the full theme was applied first', THEME['fg'], bef['fg'])
+        defaults = {f'ansi{i}': rep['frames'][f'ansi{i}'][0] for i in range(16)}
+        chk('fg reset to profile default',     'ffffff', aft['fg'])
+        chk('cursor reset to profile default', 'ffffff', aft['cursor'])
+        chk('whole palette reset', [], [k for k, v in defaults.items() if aft[k] != v])
+        chk('background still came from the hue', True,
+            aft['bg'] != bef['bg'] and hsl(aft['bg'])[2] <= 11)
+
+        print('== REGRESSION: a scheme with no background returns to the profile ==')
+        # Only non-background slots were being reset. A rule that names no
+        # background -- or whose background was dropped as unparseable -- kept
+        # whatever the previous project had.
+        chk('fg-only rule returns to profile bg', DEFAULT_BG, m['fgonly']['bg'])
+        chk('fg-only rule still applies its fg',  'ff0000',    m['fgonly']['fg'])
+        chk('unparseable bg falls back to profile', DEFAULT_BG, m['badbg']['bg'])
+        chk('unparseable bg keeps the valid fg',   '00ff00',    m['badbg']['fg'])
 
         print('== leaving a themed project restores the palette ==')
         h2 = m['home2']

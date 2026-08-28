@@ -41,6 +41,14 @@ steal focus. Its limit is that it is not a real emulator, so it cannot reproduce
 emulator-specific behaviour — that is what `--real-terminal` and `livery doctor`
 are for.
 
+## The CLI suite
+
+`test/cli.py` covers what the colour suites cannot: the standalone probe,
+`livery doctor`, `livery audit` and `livery reload`. All of them need a terminal
+that answers `OSC` queries, and the mock provides one — so this runs headless
+and steals no focus. If you add a subcommand that talks to the terminal, add it
+here rather than leaving it to the opt-in real-terminal suite.
+
 ## Verifying colour work
 
 Do not eyeball contrast. `livery test <dir>` prints the resolved theme with a
@@ -56,7 +64,17 @@ so the *terminal* question can be answered separately from the *shell* question
 — useful when someone on a shell livery does not support wants to know whether
 porting is even worthwhile.
 
-Keep it dependency-free and keep it restoring what it changes.
+Keep it dependency-free and keep it restoring what it changes — and only what it
+changes. It must not send a global reset such as `OSC 104` on the way out: that
+clears all sixteen palette entries, including ones it never probed, wiping a
+palette set by livery or anything else.
+
+## awk portability
+
+The contrast and ΔE maths shell out to `awk`. Do not use `strtonum()` — it is a
+GNU extension and `mawk`, the default `awk` on many Debian and Ubuntu systems,
+does not have it. Parse hex in bash and pass plain numbers in with `-v`. Test
+with `PATH` pointed at mawk before assuming it works.
 
 ## Shell support
 

@@ -19,6 +19,9 @@ jobs:
           bash -n livery.sh
           for f in test/*.sh; do bash -n "$f"; done
           python3 -m py_compile test/*.py
+      - name: Install mawk
+        # so the awk-portability check actually runs rather than skipping
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mawk
       - name: Headless suites
         # opens no windows; the real-terminal suite needs a display and is skipped
         run: ./test/run-tests.sh

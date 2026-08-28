@@ -22,6 +22,23 @@ echo "== logic: livery.sh against a mock terminal on a pty =="
 python3 "$HERE/logic.py" || rc=1
 
 echo
+echo "== cli: probe, doctor, audit and reload against the mock terminal =="
+python3 "$HERE/cli.py" || rc=1
+
+echo
+echo "== awk portability: the contrast maths must not need GNU extensions =="
+if command -v mawk >/dev/null; then
+  tmpd=$(mktemp -d); ln -sf "$(command -v mawk)" "$tmpd/awk"
+  got=$(PATH="$tmpd:$PATH" LIVERY_FORCE=1 LIVERY_CONF=/nonexistent bash -c \
+        "source '$LIVERY_SH'; _livery_contrast ffffff 000000")
+  if [ "$got" = "2100" ]; then echo "  ok   contrast under mawk = $got"
+  else echo "  FAIL contrast under mawk = $got (want 2100)"; rc=1; fi
+  rm -rf "$tmpd"
+else
+  echo "  SKIP mawk not installed; GNU-extension regressions cannot be caught here"
+fi
+
+echo
 echo "== prompt: interactive shell must still draw prompts and echo input =="
 python3 "$HERE/prompt.py" || rc=1
 

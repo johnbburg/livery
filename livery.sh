@@ -110,19 +110,18 @@ _livery_at_lightness() {        # hex target_L [max_S] -> hex
 # WCAG relative luminance and contrast ratio. Needs a real power function, so
 # this shells out to awk; it runs in `livery test`/`doctor`, never in the fade.
 _livery_contrast() {            # hex hex -> ratio x100 (e.g. 1057 = 10.57:1)
-  local a b
+  local a b ar ag ab br bg bb
   a=$(_livery_hex "$1") || return 1
   b=$(_livery_hex "$2") || return 1
-  awk -v a="$a" -v b="$b" '
+  read -r ar ag ab <<<"$(_livery_rgb "$a")" || return 1
+  read -r br bg bb <<<"$(_livery_rgb "$b")" || return 1
+  # Channels are passed in as decimals: strtonum() is a GNU awk extension and
+  # mawk, which is the default awk on many Debian/Ubuntu systems, lacks it.
+  awk -v ar="$ar" -v ag="$ag" -v ab="$ab" -v br="$br" -v bg="$bg" -v bb="$bb" '
     function chan(v) { v = v/255; return (v <= 0.03928) ? v/12.92 : ((v+0.055)/1.055)^2.4 }
-    function lum(h,  r,g,bb) {
-      r = chan(strtonum("0x" substr(h,1,2)))
-      g = chan(strtonum("0x" substr(h,3,2)))
-      bb= chan(strtonum("0x" substr(h,5,2)))
-      return 0.2126*r + 0.7152*g + 0.0722*bb
-    }
-    BEGIN { la=lum(a); lb=lum(b)
-            if (la < lb) { t=la; la=lb; lb=t }
+    BEGIN { la = 0.2126*chan(ar) + 0.7152*chan(ag) + 0.0722*chan(ab)
+            lb = 0.2126*chan(br) + 0.7152*chan(bg) + 0.0722*chan(bb)
+            if (la < lb) { t = la; la = lb; lb = t }
             printf "%d", ((la+0.05)/(lb+0.05))*100 + 0.5 }'
 }
 
@@ -367,7 +366,7 @@ _livery_is_color_key() {
 }
 _livery_is_theme_key() {
   _livery_is_color_key "$1" && return 0
-  case "$1" in accent|lightness|saturation) return 0 ;; *) return 1 ;; esac
+  case "$1" in accent|lightness|saturation|alpha) return 0 ;; *) return 1 ;; esac
 }
 
 _livery_theme_file() { printf '%s/%s.conf' "$LIVERY_THEMES" "$1"; }
@@ -443,8 +442,16 @@ _livery_resolve() {
 
   local light="${_LIVERY_T[lightness]:-$_LIVERY_O_lightness}"
   local satcap="${_LIVERY_T[saturation]:-$_LIVERY_O_saturation}"
+  local alpha="${_LIVERY_T[alpha]:-$_LIVERY_O_alpha}"
+  # Percentages, so bound them. An out-of-range alpha produced a wider-than-six
+  # digit "colour" that normalisation then dropped, which used to leave the
+  # previous project's background in place.
   [[ $light  =~ ^[0-9]+$ ]] || light=10
   [[ $satcap =~ ^[0-9]+$ ]] || satcap=70
+  [[ $alpha  =~ ^[0-9]+$ ]] || alpha=18
+  (( light  > 100 )) && light=100
+  (( satcap > 100 )) && satcap=100
+  (( alpha  > 100 )) && alpha=100
 
   # background precedence, highest first:
   #   inline bg  >  inline accent  >  theme bg  >  theme accent  >  auto accent
@@ -458,7 +465,7 @@ _livery_resolve() {
   if [[ -n $use_accent ]]; then
     if [[ $_LIVERY_O_mode == tint ]]; then
       local dbg; dbg=$(_livery_default_bg) || return 1
-      _LIVERY_T[bg]=$(_livery_blend "$dbg" "$use_accent" "$_LIVERY_O_alpha") || return 1
+      _LIVERY_T[bg]=$(_livery_blend "$dbg" "$use_accent" "$alpha") || return 1
     else
       _LIVERY_T[bg]=$(_livery_at_lightness "$use_accent" "$light" "$satcap") || return 1
     fi
@@ -474,7 +481,7 @@ _livery_resolve() {
     else printf 'livery: bad colour "%s" for %s in %s\n' "$v" "$k" "${label:-?}" >&2
          unset "_LIVERY_T[$k]"; fi
   done
-  unset '_LIVERY_T[accent]' '_LIVERY_T[lightness]' '_LIVERY_T[saturation]'
+  unset '_LIVERY_T[accent]' '_LIVERY_T[lightness]' '_LIVERY_T[saturation]' '_LIVERY_T[alpha]'
 
   [[ $_LIVERY_R_fade_ms =~ ^[0-9]+$ ]] || _LIVERY_R_fade_ms="$_LIVERY_O_fade_ms"
   _LIVERY_R_label="$label"
@@ -500,14 +507,22 @@ _livery_fade_bg() {   # from -> to over fade_steps / $3 ms
 # text is never rendered against a half-transitioned palette.
 _livery_emit_theme_except_bg() {
   local out= i k
-  [[ -n ${_LIVERY_T[fg]:-}     ]] && out+=$(_livery_osc "10;#${_LIVERY_T[fg]}")
-  [[ -n ${_LIVERY_T[cursor]:-} ]] && out+=$(_livery_osc "12;#${_LIVERY_T[cursor]}")
-  [[ -n ${_LIVERY_T[bold]:-}   ]] && out+=$(_livery_osc "5;0;#${_LIVERY_T[bold]}")
+  # Every slot this theme does not define is RESET, not left alone. Emitting
+  # only the keys present would let a partial theme inherit the previous
+  # project's foreground and palette, which is both wrong and invisible.
+  # Reset and set go out in one write, so the terminal never renders between.
+  if [[ -n ${_LIVERY_T[fg]:-} ]];     then out+=$(_livery_osc "10;#${_LIVERY_T[fg]}")
+  else                                     out+=$(_livery_osc 110); fi
+  if [[ -n ${_LIVERY_T[cursor]:-} ]]; then out+=$(_livery_osc "12;#${_LIVERY_T[cursor]}")
+  else                                     out+=$(_livery_osc 112); fi
+  if [[ -n ${_LIVERY_T[bold]:-} ]];   then out+=$(_livery_osc "5;0;#${_LIVERY_T[bold]}")
+  else                                     out+=$(_livery_osc 105); fi
+  out+=$(_livery_osc 104)                  # whole palette back to profile first
   for i in {0..15}; do
     k="ansi$i"
     [[ -n ${_LIVERY_T[$k]:-} ]] && out+=$(_livery_osc "4;$i;#${_LIVERY_T[$k]}")
   done
-  [[ -n $out ]] && _livery_emit "$out"
+  _livery_emit "$out"
   return 0
 }
 
@@ -515,10 +530,21 @@ _livery_apply() {
   local dir="$1"
   if _livery_resolve "$dir"; then
     _livery_emit_theme_except_bg
-    local bg="${_LIVERY_T[bg]:-}"
-    if [[ -n $bg && $bg != "${_LIVERY_CUR_BG:-}" ]]; then
-      _livery_fade_bg "${_LIVERY_CUR_BG:-$(_livery_default_bg)}" "$bg" "$_LIVERY_R_fade_ms"
-      _LIVERY_CUR_BG="$bg"
+    local bg="${_LIVERY_T[bg]:-}" dbg
+    if [[ -n $bg ]]; then
+      if [[ $bg != "${_LIVERY_CUR_BG:-}" ]]; then
+        _livery_fade_bg "${_LIVERY_CUR_BG:-$(_livery_default_bg)}" "$bg" "$_LIVERY_R_fade_ms"
+        _LIVERY_CUR_BG="$bg"
+      fi
+    elif [[ -n ${_LIVERY_CUR_BG:-} ]]; then
+      # This scheme names no background -- a foreground-only rule, or one whose
+      # background was dropped as unparseable. That means the profile's own
+      # background, not whatever the previous project left behind.
+      if dbg=$(_livery_default_bg); then
+        _livery_fade_bg "$_LIVERY_CUR_BG" "$dbg" "$_LIVERY_R_fade_ms"
+      fi
+      _livery_emit "$(_livery_osc 111)"
+      _LIVERY_CUR_BG=
     fi
     _livery_set_title "$_LIVERY_R_label"
     _LIVERY_LABEL="$_LIVERY_R_label"
@@ -643,35 +669,45 @@ livery() {
 
       # Setting a colour proves nothing about restoring it. Capture the live
       # values, reset, and check they actually moved back.
+      # Proving a reset works needs a value the reset must visibly clear. A
+      # before/after comparison cannot: for a theme that never set the palette,
+      # the slots are already at their defaults, so "unchanged" is a success
+      # and looks identical to failure. Plant a sentinel, then reset.
       printf '\n  reset check (OSC 104/110/111/112)\n'
-      local pre_bg pre_a1 pre_a4 post_bg post_a1 post_a4
-      pre_bg=$(_livery_query_color 11); pre_a1=$(_livery_query_color 4 1); pre_a4=$(_livery_query_color 4 4)
-      _LIVERY_CUR_BG= ; _livery_reset
-      _livery_msleep 150
-      post_bg=$(_livery_query_color 11); post_a1=$(_livery_query_color 4 1); post_a4=$(_livery_query_color 4 4)
-      local nm pre post
-      for nm in 'background:11:bg' 'ansi 1:4;1:a1' 'ansi 4:4;4:a4'; do
-        case "${nm##*:}" in
-          bg) pre=$pre_bg; post=$post_bg ;;
-          a1) pre=$pre_a1; post=$post_a1 ;;
-          a4) pre=$pre_a4; post=$post_a4 ;;
-        esac
-        if [[ -z $post ]]; then
-          printf '  %-22s no reply after reset\n' "${nm%%:*}"
-        elif [[ $pre == "$post" ]]; then
-          printf '  %-22s still #%s -- reset did NOT restore\n' "${nm%%:*}" "$post"
-        else
-          printf '  %-22s #%s -> #%s  restored\n' "${nm%%:*}" "$pre" "$post"
+      local sent='123456' nm code idx pre post
+      for nm in 'background:11:' 'ansi 1:4:1' 'ansi 4:4:4'; do
+        code=$(printf '%s' "$nm" | cut -d: -f2); idx=$(printf '%s' "$nm" | cut -d: -f3)
+        pre=$(_livery_query_color "$code" "$idx")
+        if [[ -z $pre ]]; then printf '  %-22s no reply; cannot test\n' "${nm%%:*}"; continue; fi
+        if [[ -n $idx ]]; then _livery_emit "$(_livery_osc "$code;$idx;#$sent")"
+        else                   _livery_emit "$(_livery_osc "$code;#$sent")"; fi
+        _livery_msleep 120
+        if [[ $(_livery_query_color "$code" "$idx") != "$sent" ]]; then
+          printf '  %-22s could not set the sentinel; skipped\n' "${nm%%:*}"
+          if [[ -n $idx ]]; then _livery_emit "$(_livery_osc "$code;$idx;#$pre")"
+          else                   _livery_emit "$(_livery_osc "$code;#$pre")"; fi
+          continue
+        fi
+        _LIVERY_CUR_BG= ; _livery_reset
+        _livery_msleep 120
+        post=$(_livery_query_color "$code" "$idx")
+        if [[ -z $post ]];          then printf '  %-22s no reply after reset\n' "${nm%%:*}"
+        elif [[ $post == "$sent" ]]; then printf '  %-22s sentinel survived -- reset does NOT work\n' "${nm%%:*}"
+        else                              printf '  %-22s sentinel cleared -> #%s  restored\n' "${nm%%:*}" "$post"
         fi
       done
       printf '\n  if the colours below look like your normal profile, resets work:\n'
       printf '    \033[0;31mred\033[0m \033[0;32mgreen\033[0m \033[0;34mblue\033[0m \033[1;32mbold green\033[0m \033[1;34mbold blue\033[0m\n'
+      # doctor is a diagnostic, not a state change: put the project's scheme
+      # back. Without clearing _LIVERY_LAST_PWD the hook would return early on
+      # the next prompt and leave the terminal on profile defaults.
+      _LIVERY_LAST_PWD=; _livery_hook
       ;;
     audit)
       # Check every configured rule at once: contrast of each colour against its
       # own background, and how far apart the backgrounds are perceptually.
       # Run this after adding a client, rather than trusting that it looks fine.
-      local i p bgs=() names=() worst=99999 worstwhat= lowcount=0 ratio k v
+      local i p bgs=() names=() worst=99999 worstwhat= lowcount=0 ratio k v measured=0
       for i in "${!_LIVERY_PATHS[@]}"; do
         p="${_LIVERY_PATHS[i]}"
         _livery_resolve "$p" || continue
@@ -682,37 +718,61 @@ livery() {
                  ansi9 ansi10 ansi11 ansi12 ansi13 ansi14 ansi15; do
           v="${_LIVERY_T[$k]:-}"; [[ -z $v ]] && continue
           ratio=$(_livery_contrast "$v" "$bg") || continue
+          measured=$((measured+1))
           if (( ratio < worst )); then worst=$ratio; worstwhat="$k on ${_LIVERY_R_label:-$p}"; fi
           (( ratio < _LIVERY_O_min_contrast )) && lowcount=$((lowcount+1))
         done
         printf '  %-22s bg #%s\n' "${_LIVERY_R_label:-$p}" "$bg"
       done
       printf '\n  %s rules with a background\n' "${#bgs[@]}"
-      printf '  lowest text contrast : %s.%02s:1  (%s)\n' \
-        "$(( worst / 100 ))" "$(printf '%02d' $(( worst % 100 )))" "$worstwhat"
+      if (( measured == 0 )); then
+        printf '  lowest text contrast : n/a (no text colours in any rule)\n'
+      else
+        printf '  lowest text contrast : %s.%02s:1  (%s)\n' \
+          "$(( worst / 100 ))" "$(printf '%02d' $(( worst % 100 )))" "$worstwhat"
+      fi
       printf '  below min_contrast   : %s\n' "$lowcount"
       if (( ${#bgs[@]} > 1 )); then
+        # Perceptual distance in CIELAB. Channels are converted to decimals here
+        # so the awk stays portable: strtonum() is GNU-only and mawk lacks it.
+        local dec= r g b
+        for p in "${bgs[@]}"; do
+          read -r r g b <<<"$(_livery_rgb "$p")"
+          dec+="$r $g $b "
+        done
         printf '  closest backgrounds  : %s\n' \
-          "$(printf '%s\n' "${!bgs[@]}" | awk -v list="${bgs[*]}" -v nm="${names[*]}" '
-            function f(v){v/=255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4}
-            function L(h,  r,g,b,X,Y,Z){ r=f(strtonum("0x" substr(h,1,2))); g=f(strtonum("0x" substr(h,3,2))); b=f(strtonum("0x" substr(h,5,2)))
-              Y=0.2126*r+0.7152*g+0.0722*b; return (Y>0.008856)? 116*(Y^(1/3))-16 : 903.3*Y }
-            function A(h,  r,g,b,X,Y){ r=f(strtonum("0x" substr(h,1,2))); g=f(strtonum("0x" substr(h,3,2))); b=f(strtonum("0x" substr(h,5,2)))
-              X=0.4124*r+0.3576*g+0.1805*b; Y=0.2126*r+0.7152*g+0.0722*b
-              return 500*(((X/0.95047)^(1/3))-((Y)^(1/3))) }
-            function B(h,  r,g,b,Y,Z){ r=f(strtonum("0x" substr(h,1,2))); g=f(strtonum("0x" substr(h,3,2))); b=f(strtonum("0x" substr(h,5,2)))
-              Y=0.2126*r+0.7152*g+0.0722*b; Z=0.0193*r+0.1192*g+0.9505*b
-              return 200*(((Y)^(1/3))-((Z/1.08883)^(1/3))) }
-            BEGIN{ n=split(list,c," "); split(nm,q," "); best=1e9
-              for(i=1;i<=n;i++) for(j=i+1;j<=n;j++){
-                d=sqrt((L(c[i])-L(c[j]))^2+(A(c[i])-A(c[j]))^2+(B(c[i])-B(c[j]))^2)
-                if(d<best){best=d; bi=q[i]; bj=q[j]} }
+          "$(awk -v d="$dec" -v nm="${names[*]}" '
+            function f(v){ v=v/255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4 }
+            function cb(t){ return (t>0.008856)? t^(1/3) : 7.787*t+16/116 }
+            BEGIN{
+              n=split(d,c," "); split(nm,q," "); k=0
+              for(i=1;i<=n;i+=3){
+                k++
+                r=f(c[i]); g=f(c[i+1]); b=f(c[i+2])
+                X=(0.4124*r+0.3576*g+0.1805*b)/0.95047
+                Y=(0.2126*r+0.7152*g+0.0722*b)
+                Z=(0.0193*r+0.1192*g+0.9505*b)/1.08883
+                fy=cb(Y); L[k]=116*fy-16; A[k]=500*(cb(X)-fy); B[k]=200*(fy-cb(Z))
+              }
+              best=1e9
+              for(i=1;i<=k;i++) for(j=i+1;j<=k;j++){
+                e=sqrt((L[i]-L[j])^2+(A[i]-A[j])^2+(B[i]-B[j])^2)
+                if(e<best){best=e; bi=q[i]; bj=q[j]}
+              }
               printf "dE %.1f  (%s vs %s)", best, bi, bj }')"
       fi
       ;;
-    reload) _livery_load_conf
-            [[ $_LIVERY_O_title == on ]] && _livery_install_title || _livery_remove_title
-            _LIVERY_LAST_PWD=; _livery_hook; printf 'livery: reloaded %s\n' "$LIVERY_CONF" ;;
+    reload)
+      _livery_load_conf
+      _LIVERY_DEFAULT_BG=                       # the config may have changed default_bg
+      if [[ $_LIVERY_O_enable == on ]]; then
+        [[ $_LIVERY_O_title == on ]] && _livery_install_title || _livery_remove_title
+        _livery_init_default_bg || true
+        _LIVERY_LAST_PWD=; _livery_hook
+      else
+        _livery_remove_title; _livery_reset     # disabling must undo, not just stop
+      fi
+      printf 'livery: reloaded %s\n' "$LIVERY_CONF" ;;
     on)     _LIVERY_O_enable=on;  _LIVERY_LAST_PWD=; _livery_hook ;;
     off)    _LIVERY_O_enable=off; _livery_remove_title; _livery_reset ;;
     title)
@@ -745,9 +805,11 @@ livery() {
 
 # ------------------------------------------------------------------- install --
 _livery_load_conf
-[[ $_LIVERY_O_title == on ]] && _livery_install_title
 _livery_init_sleepfd                 # must happen here, not in PROMPT_COMMAND
-_livery_init_default_bg || true      # learn the profile default before any color is set
+if [[ $_LIVERY_O_enable == on ]]; then
+  [[ $_LIVERY_O_title == on ]] && _livery_install_title
+  _livery_init_default_bg || true    # learn the profile default before any color is set
+fi                                   # disabled: touch nothing, not even a query
 case "${PROMPT_COMMAND:-}" in
   *_livery_hook*) ;;                                    # already installed
   *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }_livery_hook" ;;

@@ -7,8 +7,10 @@ glance. The transition is a fade, not a snap.
 A livery is the distinctive color scheme that identifies whose something is.
 Each project gets one, and its windows wear it.
 
-No daemon, no dependencies beyond bash + coreutils, no changes to your terminal
-profile. It works by writing OSC escape sequences to the tty.
+No daemon and no background process — it costs nothing while idle. It needs
+bash 4+, coreutils, and `awk` for the contrast maths in `livery test`/`audit`
+(any POSIX awk; no GNU extensions). It makes no changes to your terminal
+profile, and works by writing OSC escape sequences to the tty.
 
 ## Requirements and scope
 
@@ -107,8 +109,10 @@ alone leaves the prompt untouched. `ansi2`/`ansi10` are green, `ansi4`/`ansi12`
 are blue.
 
 A theme may instead supply only `accent`, `lightness` and `saturation`, in which
-case the background is derived and your profile's own foreground and palette are
-left alone.
+case only the background is derived. Any slot a theme does not define is **reset
+to your terminal profile's own value**, not left at whatever the previous
+project set — otherwise moving from a full theme to a partial one would silently
+keep the old project's palette.
 
 Inline rule keys override the theme file, so `theme=X ansi4=#79b8ff` is one
 theme with one colour changed.

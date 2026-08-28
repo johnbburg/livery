@@ -18,6 +18,12 @@ go "$E/proj-override";      mark proj_override
 go "$E/proj-dark";          mark proj_dark
 go "$E/proj-theme-accent";  mark proj_theme_accent
 go "$E/proj-theme-bg";      mark proj_theme_bg
+go "$E/proj-theme";         mark before_partial
+go "$E/proj-hueonly";       mark after_partial
+go "$E/proj-a";             mark before_fgonly
+go "$E/proj-fgonly";        mark fgonly
+go "$E/proj-a";             mark before_badbg
+go "$E/proj-badbg";         mark badbg
 go "$HOME";                 mark home
 go "$E/auto/alpha-proj";    mark auto_alpha
 go "$E/auto/beta-proj";     mark auto_beta
