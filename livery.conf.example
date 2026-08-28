@@ -17,6 +17,8 @@ set fade_ms     260         # fade duration per transition
 set fade_steps  16          # frames in that fade (1 = instant snap)
 set auto        on          # auto-assign a color to unlisted projects under auto_root
 set auto_root   ~/projects  # where "a project" means "a directory directly under here"
+set auto_lightness 18       # auto projects sit above the configured lightness band,
+                            # so an unlisted directory cannot read as a named one
 set title       on          # put just the project name in the tab label
 
 # Your terminal profile's own background. livery queries the terminal for this

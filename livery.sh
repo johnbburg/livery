@@ -19,6 +19,7 @@ _livery_defaults() {
   _LIVERY_O_alpha=18                               # mode=tint only
   _LIVERY_O_fade_ms=260  _LIVERY_O_fade_steps=16
   _LIVERY_O_auto=on      _LIVERY_O_auto_root="$HOME/projects"
+  _LIVERY_O_auto_lightness=18   # auto projects sit above the configured band
   _LIVERY_O_title=off    _LIVERY_O_default_bg=
   _LIVERY_O_min_contrast=700                       # warn below 7.00:1
 }
@@ -329,7 +330,7 @@ _livery_load_conf() {
       ''|'#'*) continue ;;
       set)
         case "$a" in
-          enable|mode|alpha|lightness|saturation|fade_ms|fade_steps|auto|auto_root|title|default_bg|min_contrast)
+          enable|mode|alpha|lightness|saturation|fade_ms|fade_steps|auto|auto_root|auto_lightness|title|default_bg|min_contrast)
             b=${rest%%[[:space:]]#*}; b=${b%"${b##*[![:space:]]}"}
             [[ $a == auto_root ]] && b=$(_livery_expand_tilde "$b")
             printf -v "_LIVERY_O_$a" '%s' "$b" ;;
@@ -352,9 +353,17 @@ _LIVERY_PALETTE=(e06c75 d19a66 e5c07b 98c379 56b6c2 61afef 7aa2f7 c678dd
 
 declare -A _LIVERY_T 2>/dev/null || true      # the resolved theme
 
-_livery_auto_accent() {   # stable name -> palette entry
+# Auto colours live in their own lightness band, above the one configured
+# projects use. Competing for hues does not work: at a shared lightness the
+# perceptual difference between two dark colours is dominated by lightness, so
+# an auto colour 20 degrees of hue away from a client still reads as the same
+# colour. Separating by lightness instead puts every auto colour clear of every
+# configured one, and makes "lighter" mean "not one of the projects I named".
+_LIVERY_AUTO_HUES=(0 20 40 60 80 100 120 140 160 180 200 220 240 260 280 300 320 340)
+
+_livery_auto_accent() {   # stable name -> a hue from the ring
   local n; n=$(cksum <<<"$1"); n=${n%% *}
-  printf '%s' "${_LIVERY_PALETTE[$(( n % ${#_LIVERY_PALETTE[@]} ))]}"
+  _livery_hsl_to_hex "${_LIVERY_AUTO_HUES[$(( n % ${#_LIVERY_AUTO_HUES[@]} ))]}" 55 50
 }
 
 _livery_is_color_key() {
@@ -404,13 +413,13 @@ _livery_resolve() {
   done
 
   local -a opts=()
-  local label= accent= kv k v
+  local label= accent= kv k v is_auto=
   if (( best >= 0 )); then
     label="${_LIVERY_PATHS[best]##*/}"
     read -r -a opts <<<"${_LIVERY_OPTS[best]}"
   elif [[ $_LIVERY_O_auto == on && -n $_LIVERY_O_auto_root && $dir == "$_LIVERY_O_auto_root"/* ]]; then
     label="${dir#"$_LIVERY_O_auto_root"/}"; label="${label%%/*}"
-    accent=$(_livery_auto_accent "$label")
+    accent=$(_livery_auto_accent "$label"); is_auto=1
   else
     return 1                                     # no scheme: caller resets
   fi
@@ -440,7 +449,8 @@ _livery_resolve() {
     esac
   done
 
-  local light="${_LIVERY_T[lightness]:-$_LIVERY_O_lightness}"
+  local light="${_LIVERY_T[lightness]:-${is_auto:+$_LIVERY_O_auto_lightness}}"
+  light="${light:-$_LIVERY_O_lightness}"
   local satcap="${_LIVERY_T[saturation]:-$_LIVERY_O_saturation}"
   local alpha="${_LIVERY_T[alpha]:-$_LIVERY_O_alpha}"
   # Percentages, so bound them. An out-of-range alpha produced a wider-than-six

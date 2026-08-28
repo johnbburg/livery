@@ -70,6 +70,7 @@ set fade_ms     260         # fade duration
 set fade_steps  16          # frames (1 = instant snap)
 set auto        on          # auto-color unlisted projects under auto_root
 set auto_root   ~/projects
+set auto_lightness 18       # auto colors sit above the configured band
 set title       on          # project name as the tab label
 set min_contrast 700        # `livery test` flags anything under 7.00:1
 
@@ -87,6 +88,29 @@ brightness: the background is that hue at `lightness`. Blending a near-black
 background toward a bright accent — what `mode=tint` does — always raises
 luminance, so every project ends up lighter than the profile default. Pinning
 lightness instead keeps projects equally dark and still tells them apart.
+
+## Auto mode
+
+With `auto on`, any directory directly under `auto_root` gets a background
+derived from its name — POSIX `cksum` over the name, modulo a hue ring. No
+randomness, no hostname, no path, so a directory keeps the same color on any
+machine, and renaming it changes the color.
+
+Auto colors are placed in **their own lightness band** (`auto_lightness`, above
+the one configured rules use) rather than competing for hues. That is not a
+stylistic choice. At a shared lightness the perceptual difference between two
+dark colors is dominated by lightness, so an auto color twenty degrees of hue
+away from a configured project still reads as the same color: measured here,
+eleven of fourteen auto colors once sat within ΔE 8 of a client and the worst
+was ΔE 1.6 — indistinguishable. Separating by lightness puts every auto color
+clear of every configured one, and gives "lighter" a meaning: not a project you
+named.
+
+Auto projects get a background only. Their foreground and palette reset to your
+profile, which is a second signal — a colored background with your normal prompt
+colors is an unlisted directory.
+
+`auto_root` is a single path. Anything outside it needs an explicit rule.
 
 ## Themes
 

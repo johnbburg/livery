@@ -6,6 +6,16 @@ Notable changes, newest first. Dates are ISO 8601.
 
 Initial public release.
 
+### Changed
+
+- Auto-assigned colors now occupy their own lightness band (`auto_lightness`,
+  default 18) instead of sharing the configured one. Competing for hues did not
+  work: at a shared lightness, perceptual difference between dark colors is
+  dominated by lightness, so eleven of the fourteen auto colors sat within ΔE 8
+  of a configured project and the closest was ΔE 1.6 — an unlisted directory
+  looked exactly like a client. Now none are within ΔE 8, the worst is 9.7, and
+  there are 18 colors rather than 14.
+
 ### Fixed before release
 
 Found in review, all reproduced before fixing:

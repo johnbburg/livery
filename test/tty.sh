@@ -111,8 +111,11 @@ go "$E/proj-b"; st=$(livery status 2>&1)
 chk "status: default is one color"  "1" "$([[ $(grep -c '^default  : #[0-9a-f]\{6\}$' <<<"$st") == 1 ]] && echo 1 || echo 0)"
 chk "status: current is one color"  "1" "$([[ $(grep -c '^current  : #[0-9a-f]\{6\}$' <<<"$st") == 1 ]] && echo 1 || echo 0)"
 tt=$(livery test "$E/proj-loud" 2>&1)
-chk "test: fg rendered once"     "1" "$([[ $tt == *'fg=#ffd7d7'* ]] && echo 1 || echo 0)"
-chk "test: cursor rendered once" "1" "$([[ $tt == *'cursor=#ff5555'* ]] && echo 1 || echo 0)"
+# Match the value on its key's line rather than an exact "key=value" string:
+# this suite only runs on request, so it drifts whenever output is reformatted.
+chk "test: fg reported"     "1" "$(grep -cE '^ *fg +#ffd7d7' <<<"$tt")"
+chk "test: cursor reported" "1" "$(grep -cE '^ *cursor +#ff5555' <<<"$tt")"
+chk "test: contrast shown for fg" "1" "$(grep -cE '^ *fg .*contrast' <<<"$tt")"
 
 log "== REGRESSION: project->project must not re-init (would flash to default) =="
 rm -f "$LIVERY_CACHE/default_bg"

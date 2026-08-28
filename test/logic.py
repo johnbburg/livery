@@ -148,7 +148,14 @@ def main():
         chk('alpha-proj coloured',      True, aa != DEFAULT_BG)
         chk('beta-proj differs',        True, aa != ab)
         chk('same name -> same colour', aa,   m['auto_alpha_again']['bg'])
-        chk('auto colours are dark too', True, hsl(aa)[2] <= 12 and hsl(ab)[2] <= 12)
+        # Auto projects sit in their own lightness band, above the configured
+        # one, so an unlisted directory cannot read as a project you named.
+        chk('auto colours use the auto band, not the project band', True,
+            16 <= hsl(aa)[2] <= 20 and 16 <= hsl(ab)[2] <= 20)
+        chk('auto band is clear of the configured band', True,
+            hsl(aa)[2] > hsl(m['proj_a']['bg'])[2] + 4)
+        chk('auto colours still legible with profile white', True,
+            all(c <= 0x60 for c in rgb(aa)))
 
         print('== idempotency ==')
         chk('repeat hook writes no frames',
