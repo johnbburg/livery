@@ -94,6 +94,56 @@ def main():
         chk('the scheme applied first', '071a2b', m['applied']['bg'])
         chk('reload with enable=off resets the terminal', '300a24', m['disabled']['bg'])
 
+        print('== livery preview ==')
+        prevconf = os.path.join(root, 'conf-prev')
+        os.makedirs(os.path.join(root, 'p2'), exist_ok=True)
+        write(prevconf, f'set default_bg #300a24\nset auto off\n'
+                        f'rule {root}/proj accent=#61afef\n'
+                        f'rule {root}/p2   accent=#e06c75\n')
+        drvp = os.path.join(root, 'prev.sh')
+        write(drvp, 'source "$LIVERY_SH"\nlivery preview\n')
+        rep, err = run(drvp, {'LIVERY_CONF': prevconf})
+        if rep is None:
+            print('  harness failed:', err); return 1
+        s2 = rep.get('stray', '')
+        chk('draws a swatch per rule', 2, s2.count('user@host'))
+        chk('uses truecolor background SGR', True, '48;2;' in s2)
+        chk('resets colour after each swatch', True, '[0m' in s2)
+        # the important one: preview must not touch the terminal's real colours
+        chk('emits no OSC at all', 1, len(rep['frames']['bg']))
+        chk('terminal left on its defaults', '300a24', rep['final']['bg'])
+
+        print('== livery suggest ==')
+        drvs = os.path.join(root, 'sug.sh')
+        write(drvs, 'source "$LIVERY_SH"\nlivery suggest /tmp/does-not-matter "#0058A4"\n')
+        rep, err = run(drvs, {'LIVERY_CONF': prevconf}, timeout=300)
+        if rep is None:
+            print('  harness failed:', err); return 1
+        s3 = rep.get('stray', '')
+        import re as _re
+        rule = _re.search(r'rule \S+\s+(theme=\S+ accent=#([0-9a-f]{6}) lightness=(\d+).*)', s3)
+        chk('prints a pasteable rule', True, rule is not None)
+        pred = _re.search(r'background\s+#([0-9a-f]{6})\s+dE ([0-9.]+)', s3)
+        chk('reports the background and its separation', True, pred is not None)
+        if rule and pred:
+            chk('separation clears dE 8', True, float(pred.group(2)) >= 8.0)
+            # round trip: applying the suggestion must produce what it predicted
+            rt = os.path.join(root, 'rt'); os.makedirs(rt, exist_ok=True)
+            rtconf = os.path.join(root, 'conf-rt')
+            write(rtconf, f'set default_bg #300a24\nset auto off\nrule {rt} {rule.group(1).strip()}\n')
+            drvr = os.path.join(root, 'rt.sh')
+            write(drvr, 'mark(){ printf "\\033]777;mark;%s\\033\\\\" "$1" >/dev/tty; }\n'
+                        'source "$LIVERY_SH"\n'
+                        f'cd {rt} && _livery_hook; mark applied\n')
+            rep2, _ = run(drvr, {'LIVERY_CONF': rtconf})
+            got = {k['name']: k for k in rep2['marks'] if k.get('name') != '__title__'}['applied']['bg']
+            chk('applying the suggestion reproduces the predicted colour',
+                pred.group(1), got)
+        for slot in ('path', 'user@host'):
+            mm = _re.search(slot.replace('@', '@') + r'\s+#[0-9a-f]{6}\s+([0-9.]+):1', s3)
+            chk(f'{slot} contrast reported and >= 7.5', True,
+                mm is not None and float(mm.group(1)) >= 7.5)
+
         print()
         print(f'pass={P} fail={F}')
         return 1 if F else 0

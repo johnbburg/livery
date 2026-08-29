@@ -6,6 +6,18 @@ Notable changes, newest first. Dates are ISO 8601.
 
 Initial public release.
 
+### Added
+
+- `livery suggest <dir> [#brand]` proposes a non-colliding rule: it searches
+  hues and lightnesses, scores candidates by perceptual distance to every
+  configured background, and reports the contrast figures. Distinctness is a
+  constraint and brand fidelity the thing minimised against it, so it also tells
+  you how far a crowded brand hue had to rotate. What it predicts is what livery
+  produces — the suite round-trips a suggestion through resolution.
+- `livery preview` draws every configured project as a swatch showing its real
+  prompt appearance, so the whole set can be reviewed at once. It uses SGR text
+  colour only and emits no OSC, so it cannot change the terminal's own colours.
+
 ### Changed
 
 - Auto-assigned colors now occupy their own lightness band (`auto_lightness`,

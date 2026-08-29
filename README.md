@@ -221,6 +221,8 @@ recolours that too.
 |---|---|
 | `livery status` | resolved options, the scheme in effect, and the color read back off the terminal |
 | `livery test [dir]` | the full resolved theme with contrast ratios, without applying it |
+| `livery preview` | draw every configured project as a swatch, in one screen |
+| `livery suggest <dir> [#brand]` | propose a rule that does not collide, with the figures |
 | `livery themes` | list available theme files |
 | `livery audit` | check every configured rule: contrast per color, and how far apart the backgrounds are (CIELAB ΔE) |
 | `livery title on\|off` | toggle the tab label, restoring the original `PS1` |
@@ -313,6 +315,40 @@ was written for.
 - Bash only. There is no zsh/fish hook.
 
 ## Adding a client
+
+`livery suggest` does the allocation for you:
+
+```
+$ livery suggest ~/projects/newclient '#0058A4'
+
+  rule ~/projects/newclient  theme=high-contrast-dark accent=#6126d8 lightness=12 \
+       ansi4=#b396ed ansi12=#b396ed ansi2=#21be21 ansi10=#21be21
+
+  background  #170934   dE 11.2 from the nearest (dmv)
+  path        #b396ed   7.56:1
+  user@host   #21be21   7.51:1
+  brand hue 209 rotated 51 degrees to clear the configured set
+```
+
+It searches hues and lightnesses, scores each candidate by its perceptual
+distance to every configured background, and treats distinctness as a
+**constraint** rather than something to trade against brand fidelity: it finds
+the best separation available, then takes the smallest rotation from your brand
+hue that still clears it. Scoring the two against each other produces colours
+that are neither distinct nor on-brand.
+
+It will tell you when your brand is crowded. A blue among four blue projects
+rotates 51 degrees; an orange with room moves 8. That number is the honest cost
+of keeping windows distinguishable, and it is better seen than discovered later.
+
+The contrasting prompt colour is chosen by measurement, not a fixed offset — a
+red opposite a blue lightens to pale pink and ends up close to the path colour,
+so several offsets are solved and the most separated wins.
+
+Paste the rule, then run `livery audit`. What it predicts is what livery
+produces; the test suite round-trips a suggestion through resolution to prove it.
+
+## Adding a client by hand
 
 Read the brand colour out of the site's own theme rather than guessing. For a
 Gesso theme that is `source/00-config/_design-tokens.artifact.scss` (look for

@@ -772,6 +772,157 @@ livery() {
               printf "dE %.1f  (%s vs %s)", best, bi, bj }')"
       fi
       ;;
+    suggest)
+      # Automates the allocation done by hand for every project so far: rotate a
+      # brand hue clear of what is already configured, pick a lightness that is
+      # perceptually distinct, and solve the two prompt slots for contrast.
+      local target="${2:-}" brand="${3:-}"
+      if [[ -z $target ]]; then
+        printf 'usage: livery suggest <dir> [#brandcolour]\n'; return 1
+      fi
+      target=$(_livery_expand_tilde "$target"); target=${target%/}
+      local i p bg exbg=() exnm=()
+      for i in "${!_LIVERY_PATHS[@]}"; do
+        p="${_LIVERY_PATHS[i]}"
+        [[ $p == "$target" ]] && printf 'note: %s already has a rule\n\n' "$target"
+        _livery_resolve "$p" || continue
+        [[ -n ${_LIVERY_T[bg]:-} ]] && { exbg+=("${_LIVERY_T[bg]}"); exnm+=("${_LIVERY_R_label:-$p}"); }
+      done
+
+      local bhue=-1
+      if [[ -n $brand ]]; then
+        local bh; bh=$(_livery_hex "$brand") || { printf 'livery: bad colour "%s"\n' "$brand" >&2; return 1; }
+        read -r bhue _ _ <<<"$(_livery_rgb_to_hsl "$bh")"
+      fi
+
+      printf 'searching hues and lightnesses against %s configured backgrounds...\n' "${#exbg[@]}"
+      local hue L acc cand cands=() meta=()
+      for (( hue=0; hue<360; hue+=20 )); do
+        acc=$(_livery_hsl_to_hex "$hue" 70 50)
+        for (( L=6; L<=12; L++ )); do
+          cand=$(_livery_at_lightness "$acc" "$L" 70) || continue
+          cands+=("$cand"); meta+=("$hue $L $acc")
+        done
+      done
+
+      # one awk pass: score every candidate by its distance to the nearest
+      # configured background, with a penalty for straying from the brand hue
+      local best
+      best=$(awk -v c="${cands[*]}" -v e="${exbg[*]}" -v m="${meta[*]}" -v bh="$bhue" '
+        function h2d(x,   i,n,d){ n=0; for(i=1;i<=length(x);i++){ d=index("0123456789abcdef",tolower(substr(x,i,1)))-1; n=n*16+d } return n }
+        function f(v){ v=v/255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4 }
+        function cb(t){ return (t>0.008856)? t^(1/3) : 7.787*t+16/116 }
+        function L_(h){ return 116*cb(0.2126*f(h2d(substr(h,1,2)))+0.7152*f(h2d(substr(h,3,2)))+0.0722*f(h2d(substr(h,5,2))))-16 }
+        function A_(h,  r,g,b,X,Y){ r=f(h2d(substr(h,1,2))); g=f(h2d(substr(h,3,2))); b=f(h2d(substr(h,5,2)))
+          X=(0.4124*r+0.3576*g+0.1805*b)/0.95047; Y=0.2126*r+0.7152*g+0.0722*b; return 500*(cb(X)-cb(Y)) }
+        function B_(h,  r,g,b,Y,Z){ r=f(h2d(substr(h,1,2))); g=f(h2d(substr(h,3,2))); b=f(h2d(substr(h,5,2)))
+          Y=0.2126*r+0.7152*g+0.0722*b; Z=(0.0193*r+0.1192*g+0.9505*b)/1.08883; return 200*(cb(Y)-cb(Z)) }
+        BEGIN{
+          nc=split(c,C," "); ne=split(e,E," "); split(m,M," ")
+          for(j=1;j<=ne;j++){ eL[j]=L_(E[j]); eA[j]=A_(E[j]); eB[j]=B_(E[j]) }
+          # Distinctness is a constraint, not something to trade away against
+          # brand fidelity. Find the best separation available, aim for a floor
+          # just under it, and among everything that clears the floor take the
+          # smallest rotation from the brand hue. Scoring the two against each
+          # other produces colours that are neither distinct nor on-brand.
+          for(i=1;i<=nc;i++){
+            cl=L_(C[i]); ca=A_(C[i]); cbb=B_(C[i]); mind=1e9; near=1
+            for(j=1;j<=ne;j++){
+              d=sqrt((cl-eL[j])^2+(ca-eA[j])^2+(cbb-eB[j])^2)
+              if(d<mind){mind=d; near=j}
+            }
+            MD[i]=mind; NR_[i]=near
+            if(mind>maxmd) maxmd=mind
+          }
+          floor=(maxmd<10)? maxmd*0.9 : 10
+          bestrot=1e9; bi=0
+          for(i=1;i<=nc;i++){
+            if(MD[i]<floor) continue
+            hue=M[(i-1)*3+1]+0
+            rot=0
+            if(bh>=0){ rot=(hue>bh)?hue-bh:bh-hue; if(rot>180) rot=360-rot }
+            # tie-break on the larger separation
+            if(rot<bestrot || (rot==bestrot && MD[i]>bd)){ bestrot=rot; bi=i; bd=MD[i]; bn=NR_[i] }
+          }
+          printf "%s %s %s %s %.1f %s", C[bi], M[(bi-1)*3+1], M[(bi-1)*3+2], M[(bi-1)*3+3], bd, bn
+        }')
+      local newbg nhue nL naccent nde nearidx
+      read -r newbg nhue nL naccent nde nearidx <<<"$best"
+
+      # prompt slots: the path takes the project hue, user@host a contrasting one
+      local slot4 slot2 h2 try r
+      _livery_solve_slot() {      # hue -> lightest-needed colour clearing 7.5:1
+        local hh="$1" x c
+        for (( x=35; x<100; x++ )); do
+          c=$(_livery_hsl_to_hex "$hh" 70 "$x")
+          r=$(_livery_contrast "$c" "$newbg")
+          (( r >= 750 )) && { printf '%s' "$c"; return 0; }
+        done
+        _livery_hsl_to_hex "$hh" 70 90
+      }
+      slot4=$(_livery_solve_slot "$nhue")
+      # A fixed offset is unreliable: a red opposite a blue lightens to pale
+      # pink and ends up close to the path colour. Try several and measure.
+      local -a c2s=() offs=(100 130 160 190 220)
+      for h2 in "${offs[@]}"; do c2s+=("$(_livery_solve_slot $(( (nhue + h2) % 360 )) )"); done
+      slot2=$(awk -v a="$slot4" -v c="${c2s[*]}" '
+        function h2d(x,   i,n,d){ n=0; for(i=1;i<=length(x);i++){ d=index("0123456789abcdef",tolower(substr(x,i,1)))-1; n=n*16+d } return n }
+        function f(v){ v=v/255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4 }
+        function cb(t){ return (t>0.008856)? t^(1/3) : 7.787*t+16/116 }
+        function LL(h){ return 116*cb(0.2126*f(h2d(substr(h,1,2)))+0.7152*f(h2d(substr(h,3,2)))+0.0722*f(h2d(substr(h,5,2))))-16 }
+        function AA(h,  r,g,b,X,Y){ r=f(h2d(substr(h,1,2))); g=f(h2d(substr(h,3,2))); b=f(h2d(substr(h,5,2)))
+          X=(0.4124*r+0.3576*g+0.1805*b)/0.95047; Y=0.2126*r+0.7152*g+0.0722*b; return 500*(cb(X)-cb(Y)) }
+        function BB(h,  r,g,b,Y,Z){ r=f(h2d(substr(h,1,2))); g=f(h2d(substr(h,3,2))); b=f(h2d(substr(h,5,2)))
+          Y=0.2126*r+0.7152*g+0.0722*b; Z=(0.0193*r+0.1192*g+0.9505*b)/1.08883; return 200*(cb(Y)-cb(Z)) }
+        BEGIN{ n=split(c,C," "); al=LL(a); aa=AA(a); ab=BB(a); best=-1
+          for(i=1;i<=n;i++){ d=sqrt((al-LL(C[i]))^2+(aa-AA(C[i]))^2+(ab-BB(C[i]))^2)
+            if(d>best){best=d; b=C[i]} }
+          printf "%s", b }')
+
+      printf '\n  rule ~%s  theme=high-contrast-dark accent=#%s lightness=%s ansi4=#%s ansi12=#%s ansi2=#%s ansi10=#%s\n\n' \
+        "${target#$HOME}" "$naccent" "$nL" "$slot4" "$slot4" "$slot2" "$slot2"
+      printf '  background  #%s   dE %s from the nearest (%s)\n' "$newbg" "$nde" "${exnm[$((nearidx-1))]:-none}"
+      local c4 c2
+      c4=$(_livery_contrast "$slot4" "$newbg"); c2=$(_livery_contrast "$slot2" "$newbg")
+      printf '  path        #%s   %s.%02d:1\n' "$slot4" "$((c4/100))" "$((c4%100))"
+      printf '  user@host   #%s   %s.%02d:1\n' "$slot2" "$((c2/100))" "$((c2%100))"
+      if [[ -n $brand ]]; then
+        local rot=$(( nhue > bhue ? nhue - bhue : bhue - nhue ))
+        (( rot > 180 )) && rot=$(( 360 - rot ))
+        printf '  brand hue %s rotated %s degrees to clear the configured set\n' "$bhue" "$rot"
+      fi
+      printf '\n  paste into %s, then run `livery audit`.\n' "$LIVERY_CONF"
+      unset -f _livery_solve_slot
+      ;;
+    preview)
+      # Swatches use SGR (in-band text colour), not OSC, so this only prints
+      # coloured text -- it never changes the terminal's actual colours.
+      local i p lbl bg fg a2 a4 r g b fr fg2 fb
+      case "${COLORTERM:-}" in
+        truecolor|24bit) ;;
+        *) printf 'note: COLORTERM=%s -- swatches need a truecolor terminal\n\n' "${COLORTERM:-unset}" ;;
+      esac
+      for i in "${!_LIVERY_PATHS[@]}"; do
+        p="${_LIVERY_PATHS[i]}"
+        _livery_resolve "$p" || continue
+        bg="${_LIVERY_T[bg]:-}"; [[ -z $bg ]] && continue
+        lbl="${_LIVERY_R_label:-$p}"
+        fg="${_LIVERY_T[fg]:-ffffff}"
+        a2="${_LIVERY_T[ansi2]:-$fg}"; a4="${_LIVERY_T[ansi4]:-$fg}"
+        read -r r g b <<<"$(_livery_rgb "$bg")"
+        printf '\033[48;2;%s;%s;%sm ' "$r" "$g" "$b"
+        read -r fr fg2 fb <<<"$(_livery_rgb "$a2")"
+        printf '\033[38;2;%s;%s;%sm%s' "$fr" "$fg2" "$fb" "user@host"
+        read -r fr fg2 fb <<<"$(_livery_rgb "$fg")"
+        printf '\033[38;2;%s;%s;%sm:' "$fr" "$fg2" "$fb"
+        read -r fr fg2 fb <<<"$(_livery_rgb "$a4")"
+        printf '\033[38;2;%s;%s;%sm~/%s' "$fr" "$fg2" "$fb" "$lbl"
+        read -r fr fg2 fb <<<"$(_livery_rgb "$fg")"
+        printf '\033[38;2;%s;%s;%sm$ \033[0m' "$fr" "$fg2" "$fb"
+        printf '  %-22s #%s\n' "$lbl" "$bg"
+      done
+      printf '\n  %s rules. `livery audit` measures what these only show.\n' "${#_LIVERY_PATHS[@]}"
+      ;;
     reload)
       _livery_load_conf
       _LIVERY_DEFAULT_BG=                       # the config may have changed default_bg
@@ -809,7 +960,7 @@ livery() {
       _LIVERY_CUR_BG="$prev"; _livery_reset
       printf 'Done, restored to profile defaults.\n'
       ;;
-    *) printf 'usage: livery [status|test [dir]|themes|audit|doctor|title on|off|reload|on|off|reset|forget|demo]\n' ;;
+    *) printf 'usage: livery [status|test [dir]|preview|themes|audit|suggest <dir> [#brand]|doctor|title on|off|reload|on|off|reset|forget|demo]\n' ;;
   esac
 }
 
