@@ -324,7 +324,7 @@ $ livery suggest ~/projects/newclient '#0058A4'
   rule ~/projects/newclient  theme=high-contrast-dark accent=#6126d8 lightness=12 \
        ansi4=#b396ed ansi12=#b396ed ansi2=#21be21 ansi10=#21be21
 
-  background  #170934   dE 11.2 from the nearest (dmv)
+  background  #170934   dE 11.2 from the nearest (alpha)
   path        #b396ed   7.56:1
   user@host   #21be21   7.51:1
   brand hue 209 rotated 51 degrees to clear the configured set
@@ -337,7 +337,7 @@ the best separation available, then takes the smallest rotation from your brand
 hue that still clears it. Scoring the two against each other produces colours
 that are neither distinct nor on-brand.
 
-It will tell you when your brand is crowded. A blue among four blue projects
+It will tell you when your brand is crowded. A blue among several blue projects
 rotates 51 degrees; an orange with room moves 8. That number is the honest cost
 of keeping windows distinguishable, and it is better seen than discovered later.
 
