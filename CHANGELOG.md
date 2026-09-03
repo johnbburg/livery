@@ -6,6 +6,18 @@ Notable changes, newest first. Dates are ISO 8601.
 
 Initial public release.
 
+### Fixed
+
+- The `cli` suite read the developer's installed `~/.config/livery/themes` and
+  `~/.cache/livery` instead of the repo's own. `livery suggest` emits a rule
+  naming `high-contrast-dark`, and `_livery_resolve` fails outright on a rule
+  whose theme file is missing, so the suggest round-trip test passed only on a
+  machine that happened to have the theme installed and failed everywhere else
+  -- including CI, red since `livery suggest` landed. `run()` now pins
+  `LIVERY_THEMES` and `LIVERY_CACHE` the way `logic.py` and the tty suite
+  already did, so the suite no longer reads or writes anything outside the repo.
+  The whole suite passes with `HOME` pointed at an empty directory.
+
 ### Added
 
 - `auto_contrast` (default on) keeps an auto project's text readable on the

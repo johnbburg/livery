@@ -6,11 +6,22 @@ doctor`, `livery audit` and `livery reload`. All of them need a terminal that
 answers OSC queries, which the mock provides — so none of this needs a window
 and none of it steals focus.
 """
-import json, os, shutil, subprocess, sys, tempfile
+import atexit, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVERY_SH = os.path.abspath(os.environ.get('LIVERY_SH', os.path.join(HERE, '..', 'livery.sh')))
 PROBE = os.path.join(HERE, '..', 'tools', 'terminal-probe.sh')
+# The repo's own themes, not whatever is installed at ~/.config/livery/themes.
+# `livery suggest` emits a rule naming high-contrast-dark, and _livery_resolve
+# fails outright on a rule whose theme file is missing -- so without this the
+# round-trip test below passes only on a machine that happens to have the theme
+# installed, and fails everywhere else. Same reason unit.sh pins LIVERY_CACHE.
+THEMES = os.path.join(HERE, '..', 'themes')
+# Likewise the palette/default_bg cache: eight of the run() calls below never
+# pinned it, so they read and *wrote* the developer's own ~/.cache/livery.
+# Tests that deliberately share a cache across two runs still pass their own.
+CACHE = tempfile.mkdtemp(prefix='livery-cli-cache-')
+atexit.register(shutil.rmtree, CACHE, True)
 P = F = 0
 
 def chk(desc, want, got):
@@ -21,7 +32,13 @@ def chk(desc, want, got):
         F += 1; print(f'  FAIL {desc}  got={got!r} want={want!r}')
 
 def run(script, env=None, timeout=180):
-    e = dict(os.environ, LIVERY_FORCE='1', LIVERY_SH=LIVERY_SH, **(env or {}))
+    # Built in three steps, not as dict(os.environ, **defaults, **env): that
+    # form raises TypeError when a test passes a key the defaults also set,
+    # rather than letting the test's value win.
+    e = dict(os.environ)
+    e.update(LIVERY_FORCE='1', LIVERY_SH=LIVERY_SH,
+             LIVERY_THEMES=THEMES, LIVERY_CACHE=CACHE)
+    e.update(env or {})
     out = subprocess.run([sys.executable, os.path.join(HERE, 'mockterm.py'), script],
                          capture_output=True, text=True, env=e, timeout=timeout)
     if out.returncode != 0:
