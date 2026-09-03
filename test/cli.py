@@ -33,6 +33,30 @@ def write(path, text):
         fh.write(text)
     os.chmod(path, 0o755)
 
+
+def _lin(c):
+    c = c / 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+def lum(hexstr):
+    r, g, b = (int(hexstr[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+def contrast(a, b):
+    """WCAG 2.1 contrast ratio, x100 and rounded -- what livery reports."""
+    la, lb = lum(a), lum(b)
+    if la < lb:
+        la, lb = lb, la
+    return int(((la + 0.05) / (lb + 0.05)) * 100 + 0.5)
+
+def MockDefault(key):
+    """The palette test/mockterm.py starts with, mirrored here on purpose: a
+    test that asked the mock what it had set would prove nothing."""
+    if key.startswith('ansi'):
+        v = int(key[4:]) * 16
+        return '%02x%02x%02x' % (v, v, v)
+    return {'fg': 'ffffff', 'bg': '300a24', 'cursor': 'ffffff'}[key]
+
 def main():
     root = tempfile.mkdtemp(prefix='livery-cli-')
     try:
@@ -125,6 +149,20 @@ def main():
         chk('prints a pasteable rule', True, rule is not None)
         pred = _re.search(r'background\s+#([0-9a-f]{6})\s+dE ([0-9.]+)', s3)
         chk('reports the background and its separation', True, pred is not None)
+        # ansi4 and ansi12 must not be the same value. Handing the bright prompt
+        # colour to both is what made every generated rule illegible under
+        # \e[37;44m, the same defect the shipped theme had.
+        a4 = _re.search(r'ansi4=#([0-9a-f]{6})', s3)
+        a12 = _re.search(r'ansi12=#([0-9a-f]{6})', s3)
+        chk('suggests both prompt slots', True, a4 is not None and a12 is not None)
+        if a4 and a12:
+            chk('ansi4 is not the bright ansi12 value', True,
+                a4.group(1) != a12.group(1))
+            # and the mid-tone one is the darker of the two
+            chk('ansi4 is the darker of the pair', True,
+                contrast(a4.group(1), 'ffffff') > contrast(a12.group(1), 'ffffff'))
+        chk('reports what ansi4 holds as a background', True,
+            'holds light text at' in s3)
         if rule and pred:
             chk('separation clears dE 8', True, float(pred.group(2)) >= 8.0)
             # round trip: applying the suggestion must produce what it predicted
@@ -143,6 +181,130 @@ def main():
             mm = _re.search(slot.replace('@', '@') + r'\s+#[0-9a-f]{6}\s+([0-9.]+):1', s3)
             chk(f'{slot} contrast reported and >= 7.5', True,
                 mm is not None and float(mm.group(1)) >= 7.5)
+
+        # An auto project takes a derived background and keeps the terminal
+        # profile's palette. Nothing used to check that the palette was readable
+        # on that background: the stock Ubuntu blue measures 1.17:1 on one, and
+        # `livery test` printed no contrast rows for auto projects at all. This
+        # asserts the colours the terminal is actually left holding.
+        print('== auto projects: every text slot the terminal is left with ==')
+        aroot = os.path.join(root, 'autoroot')
+        os.makedirs(os.path.join(aroot, 'someproj'), exist_ok=True)
+        acache = os.path.join(root, 'acache')
+        aconf = os.path.join(root, 'conf-auto')
+        write(aconf, f'set default_bg #300a24\nset auto on\nset auto_root {aroot}\n'
+                     f'set auto_lightness 18\nset auto_min_contrast 450\n')
+        drva = os.path.join(root, 'auto.sh')
+        write(drva, 'source "$LIVERY_SH"\n'
+                    f'cd {aroot}/someproj && _livery_hook\n')
+        rep, err = run(drva, {'LIVERY_CONF': aconf, 'LIVERY_CACHE': acache})
+        if rep is None:
+            print('  harness failed:', err); return 1
+        fin = rep['final']
+        bg = fin['bg']
+        chk('the auto background was applied', True, bg != '300a24')
+
+        FLOOR = 450
+        ONFLOOR = 300
+        # ansi1/ansi4/ansi5 are two-sided: programs paint them as a background
+        # as well as as text, so they are held to the on-colour floor instead
+        # and cannot be judged by the text floor alone.
+        TWOSIDED = ['ansi1', 'ansi4', 'ansi5']
+        TEXT = ['fg'] + [f'ansi{i}' for i in list(range(1, 8)) + list(range(9, 16))
+                         if f'ansi{i}' not in TWOSIDED]
+        bad = {k: contrast(fin[k], bg) for k in TEXT if contrast(fin[k], bg) < FLOOR}
+        chk('no text slot is left below the 4.50:1 floor', {}, bad)
+
+        # the sharp one: the mock's profile blue is #404040, unreadable on any
+        # dark background, and it is the slot a stock PS1 paints the path with
+        chk('ansi4 no longer holds the unreadable profile value', True,
+            fin['ansi4'] != '404040')
+        # and the reported bug: the same slots have to hold the light text a
+        # program puts on them. \e[37;41m is ansi7 on ansi1.
+        onbad = {k: contrast(fin[k], fin['ansi7']) for k in TWOSIDED
+                 if contrast(fin[k], fin['ansi7']) < ONFLOOR}
+        chk('every two-sided slot holds ansi7 text', {}, onbad)
+
+        # structural slots are exempt by documented design, so they must be left
+        # exactly as the profile had them
+        chk('ansi0 left at the profile value', '000000', fin['ansi0'])
+        chk('ansi8 left at the profile value', '808080', fin['ansi8'])
+
+        # a slot that was already readable must not be rewritten, or an auto
+        # project stops being distinguishable from a configured one
+        chk('an already-readable slot is untouched', 'f0f0f0', fin['ansi15'])
+        chk('some slots were left to the profile', True,
+            sum(1 for k in TEXT if fin[k] == MockDefault(k)) > 0)
+
+        # the snapshot is cached, so only the first shell pays for the queries
+        pf = os.path.join(acache, 'palette')
+        chk('the profile palette was cached', True, os.path.exists(pf))
+        if os.path.exists(pf):
+            with open(pf) as fh:
+                lines = [l for l in fh.read().splitlines() if l.strip()]
+            chk('cache holds every non-structural slot', 15, len(lines))
+            chk('cache records the profile value, not the repaired one', True,
+                'ansi4 404040' in lines)
+
+        print('== auto_contrast off keeps the profile palette untouched ==')
+        aconf2 = os.path.join(root, 'conf-auto-off')
+        write(aconf2, f'set default_bg #300a24\nset auto on\nset auto_root {aroot}\n'
+                      f'set auto_lightness 18\nset auto_contrast off\n')
+        rep2, err = run(drva, {'LIVERY_CONF': aconf2,
+                               'LIVERY_CACHE': os.path.join(root, 'acache2')})
+        if rep2 is None:
+            print('  harness failed:', err); return 1
+        chk('the background still changes', True, rep2['final']['bg'] != '300a24')
+        chk('ansi4 is left at the profile value', '404040', rep2['final']['ansi4'])
+
+        print('== livery test reports contrast for an auto project ==')
+        drvt = os.path.join(root, 'autotest.sh')
+        write(drvt, 'source "$LIVERY_SH"\n'
+                    f'livery test {aroot}/someproj\n')
+        rep3, err = run(drvt, {'LIVERY_CONF': aconf, 'LIVERY_CACHE': acache})
+        if rep3 is None:
+            print('  harness failed:', err); return 1
+        s4 = rep3.get('stray', '')
+        chk('names the floor it measured against', True, 'contrast floor 4.50:1' in s4)
+        chk('measures every text slot, not just the background', 15,
+            s4.count('contrast vs bg'))
+        chk('says which slots it repaired', True, '(repaired from #404040)' in s4)
+        chk('says which slots are the profile\'s own', True, '(profile)' in s4)
+        # Both roles are reported, because measuring only the text role is how
+        # an illegible `\e[37;41m` error block measured clean.
+        chk('reports the background role too', 3, s4.count('text on it'))
+        chk('reports it only for the two-sided slots', True,
+            all(f'ansi{n}' in l for n, l in
+                zip((1, 4, 5), [l for l in s4.splitlines() if 'text on it' in l])))
+        # The mock profile is a grey ramp, so a two-sided slot has the same hue
+        # as the text it must carry and cannot clear both floors -- it is
+        # reported LOW rather than silently left broken. The text-only slots
+        # have one floor and must all clear it.
+        onesided = [l for l in s4.splitlines()
+                    if 'contrast vs bg' in l and 'text on it' not in l]
+        chk('every text-only slot clears its floor', [],
+            [l.split()[0] for l in onesided if 'LOW' in l])
+        # A two-sided slot is labelled, not flagged against the text floor --
+        # the same treatment ansi0/ansi8 get as structural.
+        chk('two-sided slots are labelled as such', 3, s4.count('(two-sided)'))
+
+        print('== livery audit covers auto projects ==')
+        drvau = os.path.join(root, 'autoaudit.sh')
+        write(drvau, 'source "$LIVERY_SH"\nlivery audit\n')
+        rep4, err = run(drvau, {'LIVERY_CONF': aconf, 'LIVERY_CACHE': acache})
+        if rep4 is None:
+            print('  harness failed:', err); return 1
+        s5 = rep4.get('stray', '')
+        chk('has an auto section', True, 'auto projects under' in s5)
+        # Two-sided slots are judged by the on-colour floor, not the text one,
+        # so they stay out of this tally -- and on the mock's grey ramp, where
+        # hue cannot separate a slot from the text it must carry, they are what
+        # the on-colour tally reports.
+        chk('reports the auto floor', True, 'auto below floor    : 0' in s5)
+        chk('reports the background role', True, 'lowest text ON a slot' in s5)
+        chk('counts the two-sided slots separately', True,
+            'slots below that     : 0 of 3' in s5)
+        chk('measured auto text colours', True, 'auto,  lowest text' in s5)
 
         print()
         print(f'pass={P} fail={F}')

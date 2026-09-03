@@ -33,6 +33,44 @@ if command -v mawk >/dev/null; then
         "source '$LIVERY_SH'; _livery_contrast ffffff 000000")
   if [ "$got" = "2100" ]; then echo "  ok   contrast under mawk = $got"
   else echo "  FAIL contrast under mawk = $got (want 2100)"; rc=1; fi
+  # The repair solves a lightness ramp in awk rather than forking
+  # _livery_contrast per candidate, so it carries its own copy of the luminance
+  # maths -- and has to agree with the bash one on both awks, or `livery test`
+  # would report a different figure than the one the repair aimed at.
+  repair_probe='
+    source "$LIVERY_SH"
+    _LIVERY_P[ansi12]=2a7bde
+    read -r _ fixed ratio <<<"$(_livery_repair_palette 244714 450)"
+    printf "%s %s %s" "$fixed" "$ratio" "$(_livery_contrast "$fixed" 244714)"'
+  # The two-sided search carries a second copy of the same maths -- the contrast
+  # of the light text sitting *on* the slot -- so it needs its own probe. awk
+  # reports the slot against the background; bash re-measures both roles.
+  oncolor_probe='
+    source "$LIVERY_SH"
+    _LIVERY_P[ansi1]=c01c28
+    _LIVERY_P[ansi7]=d0cfcc
+    read -r _ fixed ratio <<<"$(_livery_repair_palette 244714 450 300 d0cfcc | grep ^ansi1)"
+    printf "%s %s %s %s" "$fixed" "$ratio" "$(_livery_contrast "$fixed" 244714)" \
+      "$(_livery_contrast "$fixed" d0cfcc)"'
+  for awkname in default mawk; do
+    if [ "$awkname" = mawk ]; then p="$tmpd:$PATH"; else p="$PATH"; fi
+    got=$(PATH="$p" LIVERY_FORCE=1 LIVERY_CONF=/nonexistent LIVERY_SH="$LIVERY_SH" \
+          LIVERY_CACHE="$tmpd/cache" bash -c "$repair_probe")
+    set -- $got
+    if [ "${1:-}" = "7eafeb" ] && [ -n "${2:-}" ] && [ "${2:-}" = "${3:-}" ]; then
+      echo "  ok   repair under $awkname awk = #$1, awk and bash agree at $2"
+    else
+      echo "  FAIL repair under $awkname awk = '$got' (want '7eafeb 464 464')"; rc=1
+    fi
+    got=$(PATH="$p" LIVERY_FORCE=1 LIVERY_CONF=/nonexistent LIVERY_SH="$LIVERY_SH" \
+          LIVERY_CACHE="$tmpd/cache" bash -c "$oncolor_probe")
+    set -- $got
+    if [ "${1:-}" = "df2533" ] && [ "${2:-}" = "${3:-}" ] && [ "${4:-0}" -ge 300 ]; then
+      echo "  ok   two-sided under $awkname awk = #$1, holds light text at $4"
+    else
+      echo "  FAIL two-sided under $awkname awk = '$got' (want 'df2533 224 224 303')"; rc=1
+    fi
+  done
   rm -rf "$tmpd"
 else
   echo "  SKIP mawk not installed; GNU-extension regressions cannot be caught here"

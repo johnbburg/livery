@@ -13,10 +13,36 @@ set lightness   10          # mode=dark: HSL lightness % of derived backgrounds
 set saturation  70          # mode=dark: cap on saturation, keeps hues from shouting
 set alpha       18          # mode=tint only: how far to blend toward the accent
 set min_contrast 700        # `livery test` flags anything under 7.00:1
+
+# An ANSI slot is addressed in two roles: as text (\e[31m) and as a background
+# (\e[41m). Contrast against the project background covers the first and says
+# nothing about the second, and the two pull opposite ways -- lightening a slot
+# until it reads as text is what makes it illegible under the text a program
+# puts on it. Symfony Console prints its error block as \e[37;41m, ansi7 on
+# ansi1, so composer and drush are where this shows up.
+#
+# ansi1, ansi4 and ansi5 are the slots convention pairs with light text, so they
+# are held to this floor in that role. Green, yellow and cyan are paired with
+# black text instead (fg=black;bg=green), which their lightness already suits.
+# `livery test` prints both figures per slot; `livery audit` reports the worst.
+set on_color_contrast 300   # 3.00:1, WCAG AA for large text
 set fade_ms     260         # fade duration per transition
 set fade_steps  16          # frames in that fade (1 = instant snap)
 set auto        on          # auto-assign a color to unlisted projects under auto_root
 set auto_root   ~/projects  # where "a project" means "a directory directly under here"
+set auto_lightness 18       # auto colours sit above the band configured rules use
+
+# An auto project keeps your terminal profile's text colours, and a background
+# the profile was never chosen for can make them unreadable. On stock Ubuntu it
+# does: PS1 paints the path with 01;34, and the profile's #12488b / #2a7bde
+# measure 1.17:1 and 2.51:1 against an auto background. With auto_contrast on,
+# any slot under auto_min_contrast is replaced by the profile's own colour at the
+# same hue, lightened (or darkened) the least distance that clears the floor.
+# Slots already clearing it are left alone. Set it off to keep the profile
+# palette untouched whatever it measures. Needs one OSC 4 query per slot, read
+# once and cached in ~/.cache/livery/palette; `livery forget` re-reads it.
+set auto_contrast on
+set auto_min_contrast 450   # 4.50:1, WCAG AA for body text
 set auto_lightness 18       # auto projects sit above the configured lightness band,
                             # so an unlisted directory cannot read as a named one
 set title       on          # put just the project name in the tab label
@@ -77,11 +103,18 @@ set title       on          # put just the project name in the tab label
 # bold blue, so overriding those slots puts the project identity in the text as
 # well as the background. Set BOTH the normal and bright entry of each pair --
 # ansi2+ansi10, ansi4+ansi12 -- because the codes are bold and VTE chooses
-# between them depending on its bold-is-bright setting. Choose the values by
-# solving rather than by eye: take a hue from the brand and use the lowest
-# lightness that still clears your contrast target against that project's
-# background. Note this also recolours `ls` directories and executables, and
-# some git output, which use the same slots.
+# between them depending on its bold-is-bright setting.
+#
+# Give ansi4 and ansi12 different values: ansi12 carries the path and takes the
+# bright one, while ansi4 is in the normal bank, where a program can paint it as
+# a background, so it takes a mid-tone that still holds light text at
+# on_color_contrast. ansi2 and ansi10 can share one value, since green is paired
+# with black text rather than light. `livery suggest` solves all of this.
+#
+# Choose the values by solving rather than by eye: take a hue from the brand and
+# use the lowest lightness that still clears your contrast target against that
+# project's background. Note this also recolours `ls` directories and
+# executables, and some git output, which use the same slots.
 
 rule ~/projects/alpha    theme=high-contrast-dark accent=#0058A4 lightness=9
 rule ~/projects/beta     theme=high-contrast-dark accent=#B8382F lightness=8
@@ -92,7 +125,7 @@ rule ~/projects/delta/public   theme=high-contrast-dark accent=#00666B lightness
 rule ~/projects/delta/intranet theme=high-contrast-dark accent=#00666B lightness=11 label=delta-intranet
 
 # project identity in the prompt text too, not just the background
-rule ~/projects/epsilon  theme=high-contrast-dark accent=#0014A4 lightness=10 ansi4=#949FF0 ansi12=#949FF0 ansi2=#C0A21B ansi10=#C0A21B
+rule ~/projects/epsilon  theme=high-contrast-dark accent=#0014A4 lightness=10 ansi4=#5967E2 ansi12=#949FF0 ansi2=#C0A21B ansi10=#C0A21B
 
 # A deliberately loud, unmissable scheme — the reason to have explicit rules
 # at all. Anything you must not fat-finger gets its own alarming color.

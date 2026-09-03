@@ -71,6 +71,9 @@ set fade_steps  16          # frames (1 = instant snap)
 set auto        on          # auto-color unlisted projects under auto_root
 set auto_root   ~/projects
 set auto_lightness 18       # auto colors sit above the configured band
+set auto_contrast on        # keep the profile palette readable on those colors
+set auto_min_contrast 450   # the floor it repairs to (4.50:1)
+set on_color_contrast 300   # floor for text sitting *on* a colour (3.00:1)
 set title       on          # project name as the tab label
 set min_contrast 700        # `livery test` flags anything under 7.00:1
 
@@ -106,11 +109,122 @@ was ΔE 1.6 — indistinguishable. Separating by lightness puts every auto color
 clear of every configured one, and gives "lighter" a meaning: not a project you
 named.
 
-Auto projects get a background only. Their foreground and palette reset to your
-profile, which is a second signal — a colored background with your normal prompt
-colors is an unlisted directory.
+Auto projects get a background only; their text colors stay the terminal
+profile's, which is the second signal — an unlisted directory keeps your normal
+prompt colors, where a project you named gets a theme.
+
+### Keeping the profile palette readable
+
+A background the profile was never chosen for can make that palette unreadable,
+and on Ubuntu it does. `PS1` paints the path with `01;34`, which resolves to
+`ansi4` or `ansi12` depending on `bold-is-bright`; the stock values are `#12488b`
+and `#2a7bde`, measuring **1.17:1** and **2.51:1** against an auto background at
+`auto_lightness 18`. Against the profile's own `#300a24` they are 1.95:1 and
+4.17:1, so that blue was never readable on a dark background — configured rules
+override those two slots by hand for exactly this reason, and an auto project
+has nobody to do it.
+
+With `auto_contrast on` (the default), each slot that falls under
+`auto_min_contrast` against the derived background is replaced by **the
+profile's own color at the same hue and saturation**, moved the shortest
+distance in lightness that clears the floor. `#2a7bde` becomes `#7eafeb` at
+4.64:1. Slots already clearing the floor are left alone and reset to the
+profile, so on the stock Ubuntu palette nine of fifteen change and six do not —
+the palette stays recognisably yours, brighter, not re-themed. `ansi0` and
+`ansi8` are never repaired: they are dim text and box drawing, and `livery test`
+exempts them from the threshold.
+
+`ansi1`, `ansi4` and `ansi5` are solved differently, because a program can paint
+them *as* a background — see [Two roles per slot](#two-roles-per-slot). On an
+auto background the two roles cannot both be satisfied: `#12488b` becomes
+`#1c70d9`, which holds light text at 3.09:1 and reads as text at 2.20:1, up from
+the profile's 1.17:1. `livery audit` reports both figures.
+
+The floor is 4.50:1 (WCAG AA for body text), not `min_contrast`'s 7:1.
+`min_contrast` is the target for palettes written by hand, and repairing to it
+would rewrite eleven of the fifteen stock slots — re-theming the terminal rather
+than fixing what broke. Set `auto_contrast off` to keep the profile palette
+untouched whatever it measures.
+
+Repair needs the profile's own values, which only the terminal can report. They
+are read once with an `OSC 4` query per slot and cached in
+`~/.cache/livery/palette`, so only the first shell on a machine pays for it. The
+read happens at source time, before any project color is applied — a later
+snapshot would record whichever project was on screen instead of the profile.
+`livery forget` clears both caches and re-reads them; `livery status` says how
+many slots are known. If the terminal never answers, nothing is repaired and
+`livery test` and `livery audit` say so rather than reporting the palette as
+fine.
 
 `auto_root` is a single path. Anything outside it needs an explicit rule.
+
+## Two roles per slot
+
+An ANSI slot is addressed in two roles, and a color readable in one can be
+unreadable in the other:
+
+```
+\e[31m   red text          needs contrast against the project background
+\e[41m   red background    needs contrast against the text a program puts on it
+```
+
+Measuring only the first is a silent trap. Symfony Console — so `composer`,
+`drush`, and every PHP tool that uses it — prints its error block as
+`\e[37;41m`, which is `ansi7` text on an `ansi1` background:
+
+```php
+$this->block($message, 'ERROR',   'fg=white;bg=red');     // SymfonyStyle.php
+$this->block($message, 'OK',      'fg=black;bg=green');
+$this->block($message, 'WARNING', 'fg=black;bg=yellow');
+```
+
+Lightening `ansi1` until it reads well as text is exactly what makes that block
+illegible. A pale `#ff9a9a` measures 9.46:1 as text and **1.32:1** under `ansi7`
+— worse than the stock Ubuntu red it replaced, which manages 3.92:1.
+
+So the two banks are tuned for different roles:
+
+| bank | role | tuned for |
+|---|---|---|
+| `ansi1`–`ansi7` | text *and* background | both, capped by `on_color_contrast` |
+| `ansi9`–`ansi15` | text only | contrast against the background |
+
+Within the normal bank, the target depends on which text convention pairs with
+each slot. Red, blue and magenta carry light text, so they are dark enough to
+hold `ansi7` at `on_color_contrast`. Green, yellow and cyan carry black text, so
+they stay light. `\e[101m`-style bright backgrounds are rare enough that the
+bright bank is left unconstrained.
+
+One slot cannot clear AA in both roles at once. At the theme's red hue:
+
+| `ansi1` | as text | `ansi7` on it |
+|---|---|---|
+| `#ff9a9a` | 9.46:1 | 1.32:1 |
+| `#eb0000` | 4.15:1 | 3.00:1 |
+| `#b30000` | 2.67:1 | 4.66:1 |
+
+The shipped theme takes the middle row. `livery test` prints both figures for
+these slots and labels them `(two-sided)`; they are held to
+`on_color_contrast` rather than `min_contrast`, the same way `ansi0` and `ansi8`
+are exempt as structural. `livery audit` reports the worst of each role
+separately, because one combined figure would call a palette clean while half of
+it was unreadable.
+
+### bold-is-bright
+
+The bank split assumes `bold-is-bright` is **on** in the terminal profile. That
+setting is what sends `\e[1;31m` — bold red text, what `grep`, `pytest` and
+`npm ERR!` emit — to the bright bank:
+
+```sh
+gsettings set "org.gnome.Terminal.Legacy.Profile:\
+/org/gnome/terminal/legacy/profiles:/:$(gsettings get \
+org.gnome.Terminal.ProfilesList default | tr -d \')/" bold-is-bright true
+```
+
+With it off, that text renders from `ansi1` at 4.15:1 instead of 9.51:1 —
+readable, but without the punch the bright bank gives it. livery never changes
+your terminal profile, so this is yours to set.
 
 ## Themes
 
@@ -160,9 +274,16 @@ Without that precedence, every project sharing a theme would render identically.
 
 `livery test <dir>` prints the whole resolved set with a measured WCAG contrast
 ratio for each colour against that theme's background, flagging anything below
-`min_contrast`. `ansi0` and `ansi8` are marked structural and exempt — they are
-dim text and box drawing, not body text. The shipped `high-contrast-dark`
-theme's lowest text colour is `ansi1` at 7.92:1.
+`min_contrast`. For an auto project it prints the same rows, marking each slot as
+repaired or as the profile's own and measuring against `auto_min_contrast`.
+`ansi0` and `ansi8` are marked structural and exempt — they are dim text and box
+drawing, not body text. `ansi1`, `ansi4` and `ansi5` are marked `(two-sided)`
+and carry a second figure, the contrast of the light text a program puts on
+them; they are held to `on_color_contrast` instead of `min_contrast`.
+
+In the shipped `high-contrast-dark` theme the lowest unexempt text colour is
+`ansi9` at 9.51:1, and the lowest two-sided slot is `ansi4` at 4.05:1 as text
+and 3.07:1 under `ansi7`.
 
 Theme files are parsed, never sourced; unknown keys are reported on stderr.
 
@@ -196,12 +317,21 @@ A stock Ubuntu `PS1` uses `01;32` (bold green) for `user@host` and `01;34`
 
 ```
 rule ~/projects/foo  theme=high-contrast-dark accent=#0058A4 \
-     ansi4=#949FF0 ansi12=#949FF0 ansi2=#C0A21B ansi10=#C0A21B
+     ansi4=#5967e2 ansi12=#949FF0 ansi2=#C0A21B ansi10=#C0A21B
 ```
 
-Set **both** the normal and bright slot of each pair — `ansi2`+`ansi10` and
-`ansi4`+`ansi12` — because the codes are bold, and VTE picks between the normal
-and bright entry depending on its `bold-is-bright` setting. Setting one pair
+Give `ansi4` and `ansi12` **different** values. They are one hue in two roles:
+`ansi12` carries the path and takes the bright value, while `ansi4` is in the
+normal bank, where a program can paint it as a background, so it takes a
+mid-tone that still holds light text — see
+[Two roles per slot](#two-roles-per-slot). Above, `#949FF0` reads at 7.76:1 as
+the path but holds `ansi7` at only 1.60:1; `#5967e2` reads at 4.09:1 and holds
+it at 3.05:1. `ansi2`+`ansi10` can share one value, because green is paired
+with black text rather than light.
+
+Set **both** slots of each pair either way, because the codes are bold and VTE
+picks between the normal and bright entry depending on its `bold-is-bright`
+setting. Setting one pair
 would work or not depending on that setting.
 
 Pick the values by solving rather than by eye: take the hue from a brand colour
@@ -224,13 +354,13 @@ recolours that too.
 | `livery preview` | draw every configured project as a swatch, in one screen |
 | `livery suggest <dir> [#brand]` | propose a rule that does not collide, with the figures |
 | `livery themes` | list available theme files |
-| `livery audit` | check every configured rule: contrast per color, and how far apart the backgrounds are (CIELAB ΔE) |
+| `livery audit` | check every project, rules and auto alike: contrast per color, and how far apart the backgrounds are (CIELAB ΔE) |
 | `livery title on\|off` | toggle the tab label, restoring the original `PS1` |
 | `livery doctor` | probe which colors this terminal actually lets you set |
 | `livery demo` | fade through the palette, then restore |
 | `livery reload` | re-read the config |
 | `livery on` / `off` / `reset` | enable, disable, restore profile defaults |
-| `livery forget` | drop the cached default background and re-read it |
+| `livery forget` | drop the cached default background and profile palette, and re-read both |
 
 ## Tests
 
@@ -239,16 +369,23 @@ recolours that too.
 ./test/run-tests.sh --real-terminal  # also drives a real gnome-terminal
 ```
 
-Four headless suites run by default: color math (`test/unit.sh`), livery's
-behavior against a mock terminal on a pty (`test/logic.py` +
-`test/mockterm.py`), an interactive-shell suite that drives a real bash on a pty
-and checks the prompt is still drawn and typed input still echoes
-(`test/prompt.py`), and a check that sourcing the file in a shell with no tty
-stays silent. The mock terminal speaks the OSC subset livery depends on and
+Five headless suites run by default: color math including the contrast repair
+(`test/unit.sh`), livery's behavior against a mock terminal on a pty
+(`test/logic.py` + `test/mockterm.py`), the CLI subcommands against that same
+mock (`test/cli.py` — probe, doctor, test, audit, preview, suggest, reload), an
+interactive-shell suite that drives a real bash on a pty and checks the prompt is
+still drawn and typed input still echoes (`test/prompt.py`), and a check that
+sourcing the file in a shell with no tty stays silent. The mock terminal speaks the OSC subset livery depends on and
 records every color it is told to use, so the assertions cover the whole fade
 sequence — frame count, monotonicity per channel, no overshoot, exact landing —
 not just the final color. Expected tints are computed in Python independently
 of the shell arithmetic, so the two implementations have to agree.
+
+The auto-contrast assertions read the colors the mock terminal is left holding
+and measure them with a WCAG implementation written independently in Python, so
+a repair that satisfies livery's own arithmetic but not the spec still fails.
+`test/run-tests.sh` also checks the repair produces byte-identical output under
+both gawk and mawk, and that awk's figure matches the one bash measures.
 
 `--real-terminal` additionally drives gnome-terminal and reads each color back
 off the tty. It opens a window that takes keyboard focus while it runs, and
@@ -280,6 +417,14 @@ was written for.
   `PROMPT_COMMAND`, it is reasserted on every prompt: Claude's title shows while
   it works, and the project name returns at the next prompt.
 - With no controlling terminal, sourcing the file is silent and inert.
+- The stock Ubuntu 22.04 palette (`use-theme-colors true`, so the palette is the
+  profile's own) reports `ansi4 #12488b` and `ansi12 #2a7bde` — 1.17:1 and
+  2.51:1 against an auto background at `auto_lightness 18`, and 1.95:1 and
+  4.17:1 against the profile's `#300a24`. Repair costs one awk fork, adding
+  ~14 ms to the directory change that triggers it, against a 260 ms fade.
+- Across the 119 auto projects and 12 rules configured here, `livery audit`
+  measures the lowest auto text contrast at 4.50:1 and the lowest rule text
+  contrast at 7.33:1, with the closest auto-to-rule background pair at ΔE 9.7.
 
 ## Limitations
 
@@ -322,10 +467,11 @@ was written for.
 $ livery suggest ~/projects/newclient '#0058A4'
 
   rule ~/projects/newclient  theme=high-contrast-dark accent=#6126d8 lightness=12 \
-       ansi4=#b396ed ansi12=#b396ed ansi2=#21be21 ansi10=#21be21
+       ansi4=#8354e2 ansi12=#b396ed ansi2=#21be21 ansi10=#21be21
 
   background  #170934   dE 11.2 from the nearest (alpha)
-  path        #b396ed   7.56:1
+  path        #b396ed   7.56:1   (ansi12, the bright bank)
+  plain blue  #8354e2   3.85:1   (ansi4, holds light text at 3.14:1)
   user@host   #21be21   7.51:1
   brand hue 209 rotated 51 degrees to clear the configured set
 ```

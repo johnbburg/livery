@@ -20,8 +20,47 @@ _livery_defaults() {
   _LIVERY_O_fade_ms=260  _LIVERY_O_fade_steps=16
   _LIVERY_O_auto=on      _LIVERY_O_auto_root="$HOME/projects"
   _LIVERY_O_auto_lightness=18   # auto projects sit above the configured band
+  _LIVERY_O_auto_contrast=on    # lighten profile palette slots the auto bg makes unreadable
+  _LIVERY_O_auto_min_contrast=450                  # the floor that repair aims for (4.50:1)
   _LIVERY_O_title=off    _LIVERY_O_default_bg=
   _LIVERY_O_min_contrast=700                       # warn below 7.00:1
+  _LIVERY_O_on_color_contrast=300  # floor for light text sitting *on* a slot
+}
+
+# An ANSI slot is addressed in two roles: as text (`\e[31m`) and as a background
+# (`\e[41m`). Contrast against the project background covers the first role and
+# says nothing about the second, and the two pull opposite ways -- lightening a
+# slot until it is legible as text is exactly what makes it illegible under the
+# text a program puts on it.
+#
+# These are the slots programs pair with *light* text, so they have a ceiling as
+# well as a floor. Symfony Console's error block -- composer, drush, every
+# Drupal tool -- emits `\e[37;41m`, ansi7 on ansi1; its debug formatter emits
+# `bg=blue;fg=white`. Green, yellow and cyan are omitted because the convention
+# pairs them with black text instead (`fg=black;bg=green`), which their
+# lightness already suits, and ansi7 because it *is* the light text.
+#
+# The bright bank is omitted: `\e[101m`-style bright backgrounds are rare enough
+# that constraining ansi9..ansi15 would cost text contrast for nothing.
+_LIVERY_ON_COLOR_SLOTS=(ansi1 ansi4 ansi5)
+
+_livery_is_on_color_slot() {    # slot -> 0 if it is used as a background
+  local s
+  for s in "${_LIVERY_ON_COLOR_SLOTS[@]}"; do [[ $1 == "$s" ]] && return 0; done
+  return 1
+}
+
+# The text a program actually puts on one of those slots. Symfony emits `\e[37m`
+# for `fg=white`, which is ansi7 -- not ansi15 -- so ansi7 is what has to stay
+# legible. Falls back to the profile's ansi7, then to white.
+_livery_on_color_fg() {
+  local v h
+  v="${_LIVERY_T[ansi7]:-}"
+  [[ -z $v ]] && v="${_LIVERY_P[ansi7]:-}"
+  # Theme values are not normalised until _livery_resolve runs, so this can be
+  # reached with a leading '#' still on it.
+  h=$(_livery_hex "${v:-ffffff}") || h=ffffff
+  printf '%s' "$h"
 }
 
 # ------------------------------------------------------------ color helpers --
@@ -269,6 +308,231 @@ _livery_default_bg() {
   printf '%s' "$_LIVERY_DEFAULT_BG"
 }
 
+# --------------------------------------------------------- profile palette ---
+# Auto projects take a derived background but keep the terminal profile's own
+# text colours, and whether those are readable on that background is not
+# something livery can assume. The stock Ubuntu palette's blue is #12488b: on an
+# auto background it measures 1.17:1, and on the profile's own background
+# 1.95:1, so the prompt path is illegible either way unless something overrides
+# it. Configured rules override it by hand; auto projects have nobody to do
+# that, so livery repairs the slots its own background makes unreadable.
+#
+# Repair needs the profile's values, which only the terminal knows. Reading them
+# costs one OSC query per slot, so it happens once per machine and is cached on
+# disk. It must happen while the palette is still the profile's own -- at source
+# time, before any project colour is applied -- which is why a reset precedes
+# it and why it is never reached lazily from the hook: a snapshot taken then
+# would record whichever project was on screen.
+#
+# ansi0 and ansi8 are omitted deliberately: they are dim text and box drawing,
+# and `livery test` already exempts them from the readability threshold. bold is
+# omitted because no OSC query reports it.
+_LIVERY_PROFILE_SLOTS=(fg ansi1 ansi2 ansi3 ansi4 ansi5 ansi6 ansi7
+                       ansi9 ansi10 ansi11 ansi12 ansi13 ansi14 ansi15)
+
+declare -A _LIVERY_P 2>/dev/null || true      # the profile's own text colours
+
+_livery_profile_cache() { printf '%s/palette' "$LIVERY_CACHE"; }
+
+# Disk only, never a query -- safe to reach from the prompt hook.
+_livery_load_profile_cache() {
+  (( ${#_LIVERY_P[@]} )) && return 0
+  local cache k v h
+  cache=$(_livery_profile_cache)
+  [[ -r $cache ]] || return 1
+  while read -r k v _; do
+    [[ -z $k || $k == '#'* ]] && continue
+    _livery_is_color_key "$k" || continue
+    h=$(_livery_hex "$v") || continue
+    _LIVERY_P[$k]="$h"
+  done < "$cache"
+  (( ${#_LIVERY_P[@]} ))
+}
+
+_livery_init_profile_palette() {
+  _livery_load_profile_cache && return 0
+  local cache k h idx got=0
+  cache=$(_livery_profile_cache)
+  _livery_tty_ok || return 1
+  # Read the profile's own values, not some project's: clear the palette and
+  # foreground first. Only reached on a cold cache.
+  _livery_emit "$(_livery_osc 104)$(_livery_osc 110)"
+  for k in "${_LIVERY_PROFILE_SLOTS[@]}"; do
+    if [[ $k == fg ]]; then h=$(_livery_query_color 10)      || continue
+    else idx=${k#ansi};     h=$(_livery_query_color 4 "$idx") || continue; fi
+    _LIVERY_P[$k]="$h"; got=$((got+1))
+  done
+  (( got )) || return 1
+  if mkdir -p "$LIVERY_CACHE" 2>/dev/null; then
+    { for k in "${_LIVERY_PROFILE_SLOTS[@]}"; do
+        [[ -n ${_LIVERY_P[$k]:-} ]] && printf '%s %s\n' "$k" "${_LIVERY_P[$k]}"
+      done; } > "$cache" 2>/dev/null
+  fi
+  return 0
+}
+
+# Each repaired slot keeps its own hue and saturation and moves the shortest
+# distance in lightness that clears the floor, so the palette stays recognisably
+# the profile's -- brighter, not re-themed. Slots already clearing the floor are
+# left alone and reset to the profile, which is what keeps an auto project
+# visibly different from a configured one.
+#
+# The slots in _LIVERY_ON_COLOR_SLOTS are solved differently, because they have
+# two constraints rather than one. Lightening such a slot until it is legible as
+# text is what makes it illegible under the light text a program puts on it, so
+# there the on-colour floor is the hard one: the search takes the value with the
+# most contrast against the background from among those that still hold that
+# text, rather than the least movement from the profile. Where the two floors
+# cannot both be met the slot is emitted anyway, below its text floor, and
+# `livery test`/`audit` report it -- the same treatment a one-sided slot gets
+# when no lightness at its hue works.
+#
+# The whole set is solved in a single awk pass. _livery_contrast forks awk per
+# call, so searching a lightness ramp per slot from the prompt hook would mean
+# hundreds of forks on every cd; one fork measures at ~14 ms added to the
+# directory change that triggers it, against a 260 ms fade. awk prints the exact hex whose channels it
+# measured, using the same luminance formula and the same rounding to hundredths
+# that _livery_contrast uses, so a repaired colour measures at or above the
+# floor when `livery test` re-measures it in bash.
+_livery_repair_palette() {      # bg floor [on_floor] [on_fg] -> "key hex ratio"
+  local bg="$1" floor="$2" onfloor="${3:-}" onfg="${4:-}" k pairs= r g b
+  local dual= fr fg_ fb
+  read -r r g b <<<"$(_livery_rgb "$bg")" || return 1
+  [[ -z $onfloor ]] && onfloor="${_LIVERY_O_on_color_contrast:-300}"
+  [[ $onfloor =~ ^[0-9]+$ ]] || onfloor=300
+  [[ -z $onfg ]] && onfg=$(_livery_on_color_fg)
+  onfg=$(_livery_hex "$onfg") || onfg=ffffff
+  read -r fr fg_ fb <<<"$(_livery_rgb "$onfg")" || return 1
+  for k in "${_LIVERY_PROFILE_SLOTS[@]}"; do
+    [[ -n ${_LIVERY_P[$k]:-} ]] && pairs+="$k:${_LIVERY_P[$k]} "
+  done
+  [[ -n $pairs ]] || return 1
+  for k in "${_LIVERY_ON_COLOR_SLOTS[@]}"; do dual+="$k "; done
+  # Channels go in as decimals: strtonum() is a GNU awk extension and mawk,
+  # the default awk on many Debian/Ubuntu systems, lacks it.
+  awk -v pairs="$pairs" -v br="$r" -v bgc="$g" -v bb="$b" -v floor="$floor" \
+      -v dual="$dual" -v onfloor="$onfloor" -v fr="$fr" -v fg="$fg_" -v fb="$fb" '
+    function h2d(x,   i,n,d){ n=0
+      for(i=1;i<=length(x);i++){ d=index("0123456789abcdef",tolower(substr(x,i,1)))-1; n=n*16+d }
+      return n }
+    function chan(v){ v=v/255; return (v <= 0.03928) ? v/12.92 : ((v+0.055)/1.055)^2.4 }
+    function lum(r,g,b){ return 0.2126*chan(r)+0.7152*chan(g)+0.0722*chan(b) }
+    function ratio(r,g,b,   la,lb,t){ la=lum(r,g,b); lb=BGL
+      if(la<lb){ t=la; la=lb; lb=t }
+      return int(((la+0.05)/(lb+0.05))*100+0.5) }
+    # Contrast of the light text a program puts *on* this colour, not of the
+    # colour against the background.
+    function onratio(r,g,b,   la,lb,t){ la=lum(r,g,b); lb=FGL
+      if(la<lb){ t=la; la=lb; lb=t }
+      return int(((la+0.05)/(lb+0.05))*100+0.5) }
+    function rgb2hsl(r,g,b,   mx,mn,d,h,s,l){
+      r=r/255; g=g/255; b=b/255
+      mx=(r>g)?r:g; if(b>mx) mx=b
+      mn=(r<g)?r:g; if(b<mn) mn=b
+      l=(mx+mn)/2; d=mx-mn
+      if(d==0){ h=0; s=0 }
+      else{
+        s=(l<0.5)? d/(mx+mn) : d/(2-mx-mn)
+        if(mx==r)      h=(g-b)/d
+        else if(mx==g) h=(b-r)/d+2
+        else           h=(r-g)/d+4
+        h=h*60; if(h<0) h=h+360
+      }
+      HH=h; SS=s*100; LL=l*100 }
+    function hc(p,q,t){ if(t<0) t=t+1; if(t>1) t=t-1
+      if(t<1/6) return p+(q-p)*6*t
+      if(t<1/2) return q
+      if(t<2/3) return p+(q-p)*(2/3-t)*6
+      return p }
+    function hsl2rgb(h,s,l,   q,p,r,g,b){    # sets RR GG BB
+      h=h/360; s=s/100; l=l/100
+      if(s==0){ r=l; g=l; b=l }
+      else{
+        q=(l<0.5)? l*(1+s) : l+s-l*s
+        p=2*l-q
+        r=hc(p,q,h+1/3); g=hc(p,q,h); b=hc(p,q,h-1/3)
+      }
+      RR=int(r*255+0.5); GG=int(g*255+0.5); BB=int(b*255+0.5) }
+    function try(h,s,l,   rr){
+      if(l<0) l=0; if(l>100) l=100
+      hsl2rgb(h,s,l); rr=ratio(RR,GG,BB)
+      CR=RR; CG=GG; CB=BB
+      return rr }
+    BEGIN{
+      BGL=lum(br,bgc,bb)
+      FGL=lum(fr,fg,fb)
+      rgb2hsl(br,bgc,bb)
+      # Move away from the background, not into it: the first direction tried is
+      # the one with room. Both are tried at each distance, so a slot the
+      # preferred direction cannot fix is still found.
+      dir1=(LL<50)? 1 : -1
+      nd=split(dual,D," ")
+      for(i=1;i<=nd;i++) ISDUAL[D[i]]=1
+      n=split(pairs,P," ")
+      # ansi7 is the light text those two-sided slots have to hold, and this
+      # pass can repair ansi7 itself. Solve it first and constrain against the
+      # value that will actually render, not the profile value it is about to
+      # stop being -- otherwise the slots are solved against one colour and
+      # `livery test` measures them against another.
+      for(i=1;i<=n;i++){
+        split(P[i],kv,":")
+        if(kv[1]!="ansi7") continue
+        hex=kv[2]
+        r0=h2d(substr(hex,1,2)); g0=h2d(substr(hex,3,2)); b0=h2d(substr(hex,5,2))
+        if(ratio(r0,g0,b0)>=floor){ FGL=lum(r0,g0,b0); break }
+        rgb2hsl(r0,g0,b0); h=HH; s=SS; l0=LL
+        bestr=-1; bl=l0
+        for(d=1; d<=100; d++){
+          for(w=0; w<2; w++){
+            l=l0 + d*((w==0)? dir1 : -dir1)
+            if(l<0 || l>100) continue
+            rr=try(h,s,l)
+            if(rr>bestr){ bestr=rr; bl=l }
+            if(rr>=floor){ FGL=lum(CR,CG,CB); d=101; w=2 }
+          }
+        }
+        # Unreachable floor: ansi7 ends up at its best available value, so that
+        # is the one to constrain against.
+        if(bestr>=0 && bestr<floor){ try(h,s,bl); FGL=lum(CR,CG,CB) }
+        break
+      }
+      for(i=1;i<=n;i++){
+        split(P[i],kv,":"); key=kv[1]; hex=kv[2]
+        r0=h2d(substr(hex,1,2)); g0=h2d(substr(hex,3,2)); b0=h2d(substr(hex,5,2))
+        if(key in ISDUAL){
+          # Two floors. Already clearing both means leave it at the profile.
+          if(ratio(r0,g0,b0)>=floor && onratio(r0,g0,b0)>=onfloor) continue
+          rgb2hsl(r0,g0,b0); h=HH; s=SS
+          bestr=-1; bestc=""
+          for(l=0; l<=100; l++){
+            rr=try(h,s,l)
+            if(onratio(CR,CG,CB) < onfloor) continue
+            if(rr>bestr){ bestr=rr; bestc=sprintf("%02x%02x%02x",CR,CG,CB) }
+          }
+          # Nothing at this hue holds the text -- fall through to the one-sided
+          # search rather than emit a colour chosen against no constraint.
+          if(bestc!=""){ printf "%s %s %d\n", key, bestc, bestr; continue }
+        }
+        if(ratio(r0,g0,b0)>=floor) continue
+        rgb2hsl(r0,g0,b0); h=HH; s=SS; l0=LL
+        bestr=-1; bestc=""; done=0
+        for(d=1; d<=100 && !done; d++){
+          for(w=0; w<2 && !done; w++){
+            l=l0 + d*((w==0)? dir1 : -dir1)
+            if(l<0 || l>100) continue
+            rr=try(h,s,l); cand=sprintf("%02x%02x%02x",CR,CG,CB)
+            if(rr>bestr){ bestr=rr; bestc=cand }
+            if(rr>=floor){ printf "%s %s %d\n", key, cand, rr; done=1 }
+          }
+        }
+        # No lightness at this hue clears the floor. Emit the closest available
+        # and let `livery test`/`audit` report it as still low, rather than
+        # silently leaving the unreadable original in place.
+        if(!done && bestc!="") printf "%s %s %d\n", key, bestc, bestr
+      }
+    }'
+}
+
 # -------------------------------------------------------------------- title ---
 # The tab label comes from the terminal title. Setting it from PROMPT_COMMAND
 # does not survive: a stock Ubuntu ~/.bashrc puts its own "\e]0;\u@\h: \w\a"
@@ -330,7 +594,7 @@ _livery_load_conf() {
       ''|'#'*) continue ;;
       set)
         case "$a" in
-          enable|mode|alpha|lightness|saturation|fade_ms|fade_steps|auto|auto_root|auto_lightness|title|default_bg|min_contrast)
+          enable|mode|alpha|lightness|saturation|fade_ms|fade_steps|auto|auto_root|auto_lightness|auto_contrast|auto_min_contrast|title|default_bg|min_contrast|on_color_contrast)
             b=${rest%%[[:space:]]#*}; b=${b%"${b##*[![:space:]]}"}
             [[ $a == auto_root ]] && b=$(_livery_expand_tilde "$b")
             printf -v "_LIVERY_O_$a" '%s' "$b" ;;
@@ -342,6 +606,31 @@ _livery_load_conf() {
       *) printf 'livery: unknown directive "%s" in %s\n' "$kw" "$LIVERY_CONF" >&2 ;;
     esac
   done < "$LIVERY_CONF"
+
+  # These reach bash arithmetic in the reporting paths, where a non-numeric
+  # value is a syntax error rather than a warning. Check them once, here.
+  local o d n v
+  for o in lightness:10 saturation:70 alpha:18 fade_ms:260 fade_steps:16 \
+           auto_lightness:18 min_contrast:700 auto_min_contrast:450 \
+           on_color_contrast:300; do
+    d=${o#*:}; n="_LIVERY_O_${o%%:*}"; v=${!n}
+    if [[ ! $v =~ ^[0-9]+$ ]]; then
+      printf 'livery: %s must be a number, got "%s" -- using %s\n' "${o%%:*}" "$v" "$d" >&2
+      printf -v "$n" '%s' "$d"
+    fi
+  done
+  for o in enable:on auto:on auto_contrast:on title:off; do
+    d=${o#*:}; n="_LIVERY_O_${o%%:*}"; v=${!n}
+    case "$v" in on|off) ;;
+      *) printf 'livery: %s must be on|off, got "%s" -- using %s\n' "${o%%:*}" "$v" "$d" >&2
+         printf -v "$n" '%s' "$d" ;;
+    esac
+  done
+  case "$_LIVERY_O_mode" in dark|tint) ;;
+    *) printf 'livery: mode must be dark|tint, got "%s" -- using dark\n' \
+         "$_LIVERY_O_mode" >&2
+       _LIVERY_O_mode=dark ;;
+  esac
 }
 
 # --------------------------------------------------------- scheme resolution --
@@ -404,6 +693,7 @@ _livery_resolve() {
   local dir="$1" i best=-1 bestlen=-1 p
   _LIVERY_T=()
   _LIVERY_R_label= _LIVERY_R_fade_ms="$_LIVERY_O_fade_ms" _LIVERY_R_theme=
+  _LIVERY_R_auto= _LIVERY_R_repaired= _LIVERY_R_profile_unknown=
 
   for i in "${!_LIVERY_PATHS[@]}"; do            # longest-prefix wins
     p="${_LIVERY_PATHS[i]}"
@@ -419,7 +709,7 @@ _livery_resolve() {
     read -r -a opts <<<"${_LIVERY_OPTS[best]}"
   elif [[ $_LIVERY_O_auto == on && -n $_LIVERY_O_auto_root && $dir == "$_LIVERY_O_auto_root"/* ]]; then
     label="${dir#"$_LIVERY_O_auto_root"/}"; label="${label%%/*}"
-    accent=$(_livery_auto_accent "$label"); is_auto=1
+    accent=$(_livery_auto_accent "$label"); is_auto=1; _LIVERY_R_auto=1
   else
     return 1                                     # no scheme: caller resets
   fi
@@ -478,6 +768,25 @@ _livery_resolve() {
       _LIVERY_T[bg]=$(_livery_blend "$dbg" "$use_accent" "$alpha") || return 1
     else
       _LIVERY_T[bg]=$(_livery_at_lightness "$use_accent" "$light" "$satcap") || return 1
+    fi
+  fi
+
+  # An auto project has no rule to override the prompt colours, so the profile
+  # palette is what it gets -- and a background it never chose can push that
+  # palette below legibility. Repair the slots this background breaks, leaving
+  # the rest reset to the profile. Configured rules are untouched: they name
+  # their own colours and `livery audit` measures them.
+  if [[ -n $is_auto && $_LIVERY_O_auto_contrast == on && -n ${_LIVERY_T[bg]:-} ]]; then
+    local floor="$_LIVERY_O_auto_min_contrast" rk rv rr
+    [[ $floor =~ ^[0-9]+$ ]] || floor=450
+    if _livery_load_profile_cache; then
+      while read -r rk rv rr; do
+        [[ -z $rk || -n ${_LIVERY_T[$rk]:-} ]] && continue
+        _LIVERY_T[$rk]="$rv"
+        _LIVERY_R_repaired+="$rk "
+      done < <(_livery_repair_palette "${_LIVERY_T[bg]}" "$floor")
+    else
+      _LIVERY_R_profile_unknown=1
     fi
   fi
 
@@ -586,28 +895,81 @@ _livery_hook() {
 }
 
 # ------------------------------------------------------------------- livery CLI --
+_livery_ratio_fmt() {           # ratio x100 -> "N.NN"
+  printf '%s.%02s' "$(( ${1:-0} / 100 ))" "$(printf '%02d' $(( ${1:-0} % 100 )))"
+}
+
+# One colour row: key, value, measured contrast against the background, and a
+# flag when it falls under the threshold that applies to it.
+_livery_report_row() {          # key hex bg threshold [note]
+  local k="$1" v="$2" bg="$3" thr="$4" note="${5:-}" ratio flag= onr= oncol=
+  if [[ -z $bg || $k == bg ]]; then
+    printf '  %-8s #%s%s\n' "$k" "$v" "$note"; return 0
+  fi
+  ratio=$(_livery_contrast "$v" "$bg" 2>/dev/null)
+  # Each slot is judged against the floor that governs it. ansi0/ansi8 are
+  # structural -- dim text and box drawing, not body text -- so no readability
+  # threshold applies. A two-sided slot is governed by the on-colour floor
+  # instead: the two pull opposite ways, and holding the text a program puts on
+  # it is the constraint that cannot be met any other way. Its text figure is
+  # still printed, just not held to the text threshold, the same way a
+  # structural slot's is.
+  case "$k" in
+    ansi0|ansi8) flag='  (structural)' ;;
+    *) if _livery_is_on_color_slot "$k"; then flag='  (two-sided)'
+       else (( ${ratio:-0} < thr )) && flag='  LOW'; fi ;;
+  esac
+  # A slot programs paint as a background is measured in that role too: the
+  # figure above is the colour against the background, this one is the light
+  # text a program puts on the colour. Reporting only the first is how an
+  # illegible `\e[37;41m` error block measured clean.
+  if _livery_is_on_color_slot "$k"; then
+    onr=$(_livery_contrast "$v" "$(_livery_on_color_fg)" 2>/dev/null)
+    oncol="   text on it $(_livery_ratio_fmt "${onr:-0}"):1"
+    (( ${onr:-0} < _LIVERY_O_on_color_contrast )) && flag+=' LOW-ON-COLOUR'
+  fi
+  printf '  %-8s #%s   contrast vs bg %s:1%s%s%s\n' \
+    "$k" "$v" "$(_livery_ratio_fmt "${ratio:-0}")" "$oncol" "$note" "$flag"
+}
+
 _livery_report_theme() {        # print the resolved theme with contrast figures
-  local k v bg fg ratio
-  bg="${_LIVERY_T[bg]:-}"; fg="${_LIVERY_T[fg]:-}"
+  local k v bg thr note nrep=0 nprof=0
+  bg="${_LIVERY_T[bg]:-}"
   printf '  %-8s %s\n' 'label' "${_LIVERY_R_label:-<none>}"
   [[ -n ${_LIVERY_R_theme:-} ]] && printf '  %-8s %s\n' 'theme' "$_LIVERY_R_theme"
+
+  # An auto project is measured against the floor livery repairs to, not against
+  # min_contrast: min_contrast is the target for themes written by hand, and
+  # nothing here was written by hand.
+  thr="$_LIVERY_O_min_contrast"
+  if [[ -n ${_LIVERY_R_auto:-} && $_LIVERY_O_auto_contrast == on ]]; then
+    thr="$_LIVERY_O_auto_min_contrast"
+    for k in $_LIVERY_R_repaired; do nrep=$((nrep+1)); done
+    for k in "${_LIVERY_PROFILE_SLOTS[@]}"; do
+      [[ -n ${_LIVERY_P[$k]:-} && -z ${_LIVERY_T[$k]:-} ]] && nprof=$((nprof+1))
+    done
+    if [[ -n ${_LIVERY_R_profile_unknown:-} ]]; then
+      printf '  %-8s the profile palette is unknown, so nothing was repaired --\n' 'auto'
+      printf '  %-8s run "livery forget" in a terminal that answers OSC 4.\n' ''
+    else
+      printf '  %-8s contrast floor %s:1  (%s slots repaired, %s left at the profile'"'"'s own)\n' \
+        'auto' "$(_livery_ratio_fmt "$thr")" "$nrep" "$nprof"
+    fi
+  fi
+
   for k in bg fg cursor bold ansi0 ansi1 ansi2 ansi3 ansi4 ansi5 ansi6 ansi7 \
            ansi8 ansi9 ansi10 ansi11 ansi12 ansi13 ansi14 ansi15; do
     v="${_LIVERY_T[$k]:-}"
-    [[ -z $v ]] && continue
-    if [[ -n $bg && $k != bg ]]; then
-      ratio=$(_livery_contrast "$v" "$bg" 2>/dev/null)
-      # ansi0/ansi8 are structural -- dim text and box drawing, not body text --
-      # so the readability threshold does not apply to them.
-      local flag=
-      case "$k" in
-        ansi0|ansi8) flag='  (structural)' ;;
-        *) (( ${ratio:-0} < _LIVERY_O_min_contrast )) && flag='  LOW' ;;
+    if [[ -n $v ]]; then
+      note=
+      case " $_LIVERY_R_repaired " in
+        *" $k "*) note="  (repaired from #${_LIVERY_P[$k]})" ;;
       esac
-      printf '  %-8s #%s   contrast vs bg %s.%02s:1%s\n' "$k" "$v" \
-        "$(( ${ratio:-0} / 100 ))" "$(printf '%02d' $(( ${ratio:-0} % 100 )))" "$flag"
-    else
-      printf '  %-8s #%s\n' "$k" "$v"
+      _livery_report_row "$k" "$v" "$bg" "$thr" "$note"
+    elif [[ -n ${_LIVERY_R_auto:-} && -n ${_LIVERY_P[$k]:-} ]]; then
+      # Left alone, so it is whatever the profile says. Measured all the same:
+      # unmeasured is how the unreadable slots went unnoticed.
+      _livery_report_row "$k" "${_LIVERY_P[$k]}" "$bg" "$thr" '  (profile)'
     fi
   done
 }
@@ -621,7 +983,18 @@ livery() {
       printf 'enable   : %s   mode=%s lightness=%s sat<=%s fade=%sms/%s  auto=%s title=%s\n' \
         "$_LIVERY_O_enable" "$_LIVERY_O_mode" "$_LIVERY_O_lightness" "$_LIVERY_O_saturation" \
         "$_LIVERY_O_fade_ms" "$_LIVERY_O_fade_steps" "$_LIVERY_O_auto" "$_LIVERY_O_title"
-      printf 'auto_root: %s\n' "$_LIVERY_O_auto_root"
+      printf 'auto_root: %s   auto_contrast=%s floor=%s.%02s:1\n' "$_LIVERY_O_auto_root" \
+        "$_LIVERY_O_auto_contrast" "$(( _LIVERY_O_auto_min_contrast / 100 ))" \
+        "$(printf '%02d' $(( _LIVERY_O_auto_min_contrast % 100 )))"
+      if [[ $_LIVERY_O_auto == on && $_LIVERY_O_auto_contrast == on ]]; then
+        if (( ${#_LIVERY_P[@]} )); then
+          printf 'palette  : %s of %s profile slots known (%s)\n' \
+            "${#_LIVERY_P[@]}" "${#_LIVERY_PROFILE_SLOTS[@]}" "$(_livery_profile_cache)"
+        else
+          printf 'palette  : unknown -- the terminal did not answer; auto projects keep\n'
+          printf '           the profile palette unrepaired. Run "livery forget" to retry.\n'
+        fi
+      fi
       printf 'rules    : %s\n' "${#_LIVERY_PATHS[@]}"
       printf 'default  : %s\n' "$(_livery_fmt "${_LIVERY_DEFAULT_BG:-}" '<unknown - query failed>')"
       printf 'current  : %s\n' "$(_livery_fmt "${_LIVERY_CUR_BG:-}")"
@@ -714,62 +1087,188 @@ livery() {
       _LIVERY_LAST_PWD=; _livery_hook
       ;;
     audit)
-      # Check every configured rule at once: contrast of each colour against its
-      # own background, and how far apart the backgrounds are perceptually.
+      # Check every project at once: contrast of each colour against its own
+      # background, and how far apart the backgrounds are perceptually.
       # Run this after adding a client, rather than trusting that it looks fine.
-      local i p bgs=() names=() worst=99999 worstwhat= lowcount=0 ratio k v measured=0
+      #
+      # Auto projects are included. Leaving them out is how a 1.17:1 prompt
+      # colour survived: a rule's colours are written down and get measured,
+      # while an auto project's come from the terminal profile and used to be
+      # measured nowhere at all.
+      local i p k v ratio bgs=() names=() kinds=()
+      local rworst=99999 rwhat= rlow=0 rmeas=0
+      local aworst=99999 awhat= alow=0 ameas=0
+      # The background role is tracked separately from the text role. They pull
+      # opposite ways, so one worst-case figure covering both would report a
+      # palette as fine when half of it is unreadable.
+      local oworst=99999 owhat= olow=0 omeas=0
+      local -a autodirs=()
+
+      _livery_audit_slots() {   # accumulate stats for the resolved project
+        local kind="$1" nm="$2" bg="$3" thr="$4" kk vv rr oo
+        for kk in fg bold cursor ansi1 ansi2 ansi3 ansi4 ansi5 ansi6 ansi7 \
+                  ansi9 ansi10 ansi11 ansi12 ansi13 ansi14 ansi15; do
+          vv="${_LIVERY_T[$kk]:-}"
+          # An auto project's unrepaired slots are the profile's own. They are
+          # what actually renders, so they are what has to be measured.
+          [[ -z $vv && $kind == auto ]] && vv="${_LIVERY_P[$kk]:-}"
+          [[ -z $vv ]] && continue
+          # A two-sided slot is measured in the role that governs it -- the
+          # light text that lands on it -- and kept out of the text tallies.
+          # Counting it in both would report every project as failing a floor
+          # it cannot reach, burying the ones that are genuinely broken.
+          if _livery_is_on_color_slot "$kk"; then
+            if oo=$(_livery_contrast "$vv" "$(_livery_on_color_fg)"); then
+              omeas=$((omeas+1))
+              (( oo < oworst )) && { oworst=$oo; owhat="$kk on $nm"; }
+              (( oo < _LIVERY_O_on_color_contrast )) && olow=$((olow+1))
+            fi
+            continue
+          fi
+          rr=$(_livery_contrast "$vv" "$bg") || continue
+          if [[ $kind == auto ]]; then
+            ameas=$((ameas+1))
+            (( rr < aworst )) && { aworst=$rr; awhat="$kk on $nm"; }
+            (( rr < thr )) && alow=$((alow+1))
+          else
+            rmeas=$((rmeas+1))
+            (( rr < rworst )) && { rworst=$rr; rwhat="$kk on $nm"; }
+            (( rr < thr )) && rlow=$((rlow+1))
+          fi
+        done
+      }
+
+      printf '  configured rules\n'
       for i in "${!_LIVERY_PATHS[@]}"; do
         p="${_LIVERY_PATHS[i]}"
         _livery_resolve "$p" || continue
         local bg="${_LIVERY_T[bg]:-}"
         [[ -z $bg ]] && continue
-        names+=("${_LIVERY_R_label:-$p}"); bgs+=("$bg")
-        for k in fg bold cursor ansi1 ansi2 ansi3 ansi4 ansi5 ansi6 ansi7 \
-                 ansi9 ansi10 ansi11 ansi12 ansi13 ansi14 ansi15; do
-          v="${_LIVERY_T[$k]:-}"; [[ -z $v ]] && continue
-          ratio=$(_livery_contrast "$v" "$bg") || continue
-          measured=$((measured+1))
-          if (( ratio < worst )); then worst=$ratio; worstwhat="$k on ${_LIVERY_R_label:-$p}"; fi
-          (( ratio < _LIVERY_O_min_contrast )) && lowcount=$((lowcount+1))
-        done
-        printf '  %-22s bg #%s\n' "${_LIVERY_R_label:-$p}" "$bg"
+        local nm="${_LIVERY_R_label:-$p}"
+        names+=("$nm"); bgs+=("$bg"); kinds+=(rule)
+        _livery_audit_slots rule "$nm" "$bg" "$_LIVERY_O_min_contrast"
+        printf '    %-22s bg #%s\n' "$nm" "$bg"
       done
-      printf '\n  %s rules with a background\n' "${#bgs[@]}"
-      if (( measured == 0 )); then
-        printf '  lowest text contrast : n/a (no text colours in any rule)\n'
-      else
-        printf '  lowest text contrast : %s.%02s:1  (%s)\n' \
-          "$(( worst / 100 ))" "$(printf '%02d' $(( worst % 100 )))" "$worstwhat"
+
+      if [[ $_LIVERY_O_auto == on && -n $_LIVERY_O_auto_root ]]; then
+        printf '\n  auto projects under %s\n' "$_LIVERY_O_auto_root"
+        if [[ $_LIVERY_O_auto_contrast == on ]] && ! _livery_load_profile_cache; then
+          printf '    the profile palette is unknown, so the colours these actually\n'
+          printf '    render with cannot be measured. Run "livery forget" in a\n'
+          printf '    terminal that answers OSC 4, then audit again.\n'
+        fi
+        while IFS= read -r p; do autodirs+=("$p"); done < <(
+          shopt -s nullglob
+          for p in "$_LIVERY_O_auto_root"/*/; do printf '%s\n' "${p%/}"; done | sort
+        )
+        if (( ${#autodirs[@]} == 0 )); then
+          printf '    none found\n'
+        fi
+        # There are typically far more auto projects than rules, and they have
+        # no hand-written colours to inspect -- so only the ones with something
+        # to report are listed. A clean auto project is a count, not a line.
+        local aclean=0 arepaired=0
+        for p in "${autodirs[@]}"; do
+          _livery_resolve "$p" || continue
+          # A directory under auto_root that has its own rule is a configured
+          # project and was listed above; resolve reports which it got.
+          [[ -n ${_LIVERY_R_auto:-} ]] || continue
+          local bg="${_LIVERY_T[bg]:-}"
+          [[ -z $bg ]] && continue
+          local nm="${_LIVERY_R_label:-$p}"
+          names+=("$nm"); bgs+=("$bg"); kinds+=(auto)
+          local lowbefore=$alow nrep=0
+          _livery_audit_slots auto "$nm" "$bg" "$_LIVERY_O_auto_min_contrast"
+          for k in $_LIVERY_R_repaired; do nrep=$((nrep+1)); done
+          arepaired=$((arepaired+nrep))
+          if (( alow > lowbefore )); then
+            printf '    %-22s bg #%s   %s repaired, %s STILL BELOW THE FLOOR\n' \
+              "$nm" "$bg" "$nrep" "$(( alow - lowbefore ))"
+          else
+            aclean=$((aclean+1))
+          fi
+        done
+        printf '    %s clear the floor with %s slots repaired between them\n' \
+          "$aclean" "$arepaired"
       fi
-      printf '  below min_contrast   : %s\n' "$lowcount"
-      if (( ${#bgs[@]} > 1 )); then
+      unset -f _livery_audit_slots
+
+      printf '\n  %s projects with a background\n' "${#bgs[@]}"
+      if (( rmeas == 0 )); then
+        printf '  rules, lowest text  : n/a (no text colours in any rule)\n'
+      else
+        printf '  rules, lowest text  : %s:1  (%s)   target %s:1\n' \
+          "$(_livery_ratio_fmt "$rworst")" "$rwhat" "$(_livery_ratio_fmt "$_LIVERY_O_min_contrast")"
+      fi
+      printf '  rules below target  : %s\n' "$rlow"
+      if (( ameas > 0 )); then
+        printf '  auto,  lowest text  : %s:1  (%s)   floor  %s:1\n' \
+          "$(_livery_ratio_fmt "$aworst")" "$awhat" "$(_livery_ratio_fmt "$_LIVERY_O_auto_min_contrast")"
+        printf '  auto below floor    : %s\n' "$alow"
+      fi
+      # The other role: ansi1/ansi4/ansi5 painted as a background, measured
+      # against the light text a program puts on them -- `\e[37;41m`, which is
+      # what composer and drush print an error block with.
+      if (( omeas > 0 )); then
+        printf '  lowest text ON a slot: %s:1  (%s)   floor  %s:1\n' \
+          "$(_livery_ratio_fmt "$oworst")" "$owhat" \
+          "$(_livery_ratio_fmt "$_LIVERY_O_on_color_contrast")"
+        printf '  slots below that     : %s of %s\n' "$olow" "$omeas"
+      fi
+      # Two separations matter, and they are not the same question. Between
+      # rules: whether two projects you named look alike. Between an auto
+      # project and a rule: whether "lighter" still means "not one I named".
+      #
+      # Auto projects are not compared with each other. The hue ring has 18
+      # entries at one lightness, so with more auto projects than that,
+      # collisions are arithmetic rather than a defect -- reporting dE 0.0 as
+      # the headline figure would bury both numbers that do mean something.
+      local rdec= adec= rnm=() anm=() abgs=() r g b
+      for i in "${!bgs[@]}"; do
+        read -r r g b <<<"$(_livery_rgb "${bgs[i]}")"
+        if [[ ${kinds[i]} == auto ]]; then
+          adec+="$r $g $b "; anm+=("${names[i]}"); abgs+=("${bgs[i]}")
+        else
+          rdec+="$r $g $b "; rnm+=("${names[i]}")
+        fi
+      done
+      if (( ${#rnm[@]} > 1 || (${#rnm[@]} > 0 && ${#anm[@]} > 0) )); then
         # Perceptual distance in CIELAB. Channels are converted to decimals here
         # so the awk stays portable: strtonum() is GNU-only and mawk lacks it.
-        local dec= r g b
-        for p in "${bgs[@]}"; do
-          read -r r g b <<<"$(_livery_rgb "$p")"
-          dec+="$r $g $b "
-        done
-        printf '  closest backgrounds  : %s\n' \
-          "$(awk -v d="$dec" -v nm="${names[*]}" '
-            function f(v){ v=v/255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4 }
-            function cb(t){ return (t>0.008856)? t^(1/3) : 7.787*t+16/116 }
-            BEGIN{
-              n=split(d,c," "); split(nm,q," "); k=0
-              for(i=1;i<=n;i+=3){
-                k++
-                r=f(c[i]); g=f(c[i+1]); b=f(c[i+2])
-                X=(0.4124*r+0.3576*g+0.1805*b)/0.95047
-                Y=(0.2126*r+0.7152*g+0.0722*b)
-                Z=(0.0193*r+0.1192*g+0.9505*b)/1.08883
-                fy=cb(Y); L[k]=116*fy-16; A[k]=500*(cb(X)-fy); B[k]=200*(fy-cb(Z))
-              }
-              best=1e9
-              for(i=1;i<=k;i++) for(j=i+1;j<=k;j++){
-                e=sqrt((L[i]-L[j])^2+(A[i]-A[j])^2+(B[i]-B[j])^2)
-                if(e<best){best=e; bi=q[i]; bj=q[j]}
-              }
-              printf "dE %.1f  (%s vs %s)", best, bi, bj }')"
+        awk -v rd="$rdec" -v ad="$adec" -v rn="${rnm[*]}" -v an="${anm[*]}" '
+          function f(v){ v=v/255; return (v<=0.04045)? v/12.92 : ((v+0.055)/1.055)^2.4 }
+          function cb(t){ return (t>0.008856)? t^(1/3) : 7.787*t+16/116 }
+          function lab(d,L,A,B,   n,c,i,k,r,g,b,X,Y,Z,fy){
+            n=split(d,c," "); k=0
+            for(i=1;i<=n;i+=3){
+              k++
+              r=f(c[i]); g=f(c[i+1]); b=f(c[i+2])
+              X=(0.4124*r+0.3576*g+0.1805*b)/0.95047
+              Y=(0.2126*r+0.7152*g+0.0722*b)
+              Z=(0.0193*r+0.1192*g+0.9505*b)/1.08883
+              fy=cb(Y); L[k]=116*fy-16; A[k]=500*(cb(X)-fy); B[k]=200*(fy-cb(Z))
+            }
+            return k }
+          function de(i,j,L1,A1,B1,L2,A2,B2){
+            return sqrt((L1[i]-L2[j])^2+(A1[i]-A2[j])^2+(B1[i]-B2[j])^2) }
+          BEGIN{
+            nr=lab(rd,RL,RA,RB); na=lab(ad,AL,AA,AB)
+            split(rn,rq," "); split(an,aq," ")
+            best=1e9
+            for(i=1;i<=nr;i++) for(j=i+1;j<=nr;j++){
+              e=de(i,j,RL,RA,RB,RL,RA,RB); if(e<best){best=e; bi=rq[i]; bj=rq[j]} }
+            if(nr>1) printf "  closest two rules   : dE %.1f  (%s vs %s)\n", best, bi, bj
+            best=1e9
+            for(i=1;i<=na;i++) for(j=1;j<=nr;j++){
+              e=de(i,j,AL,AA,AB,RL,RA,RB); if(e<best){best=e; bi=aq[i]; bj=rq[j]} }
+            if(na>0 && nr>0) printf "  closest auto to rule: dE %.1f  (%s vs %s)\n", best, bi, bj
+          }'
+      fi
+      if (( ${#anm[@]} > 0 )); then
+        local ndistinct
+        ndistinct=$(printf '%s\n' "${abgs[@]}" | sort -u | wc -l)
+        printf '  auto colours in use : %s distinct across %s projects (%s on the ring)\n' \
+          "$ndistinct" "${#anm[@]}" "${#_LIVERY_AUTO_HUES[@]}"
       fi
       ;;
     suggest)
@@ -850,7 +1349,7 @@ livery() {
       read -r newbg nhue nL naccent nde nearidx <<<"$best"
 
       # prompt slots: the path takes the project hue, user@host a contrasting one
-      local slot4 slot2 h2 try r
+      local slot4 slot2 slot4n h2 try r
       _livery_solve_slot() {      # hue -> lightest-needed colour clearing 7.5:1
         local hh="$1" x c
         for (( x=35; x<100; x++ )); do
@@ -860,7 +1359,30 @@ livery() {
         done
         _livery_hsl_to_hex "$hh" 70 90
       }
+      # ansi4 is in the normal bank, so a program can paint it as a background.
+      # Giving it the bright prompt colour is what leaves `\e[37;44m` unreadable,
+      # so it takes the darkest-but-most-contrasting value at the same hue that
+      # still holds the light text landing on it. The path keeps its punch from
+      # ansi12, which PS1 reaches through `01;34` when bold-is-bright is on.
+      _livery_solve_on_color_slot() {   # hue -> mid-tone holding light text
+        local hh="$1" x c o rr bestc= bestr=-1 onfg
+        onfg=$(_livery_on_color_fg)
+        for (( x=20; x<100; x++ )); do
+          c=$(_livery_hsl_to_hex "$hh" 70 "$x")
+          o=$(_livery_contrast "$c" "$onfg")
+          (( ${o:-0} < _LIVERY_O_on_color_contrast )) && continue
+          rr=$(_livery_contrast "$c" "$newbg")
+          (( ${rr:-0} > bestr )) && { bestr=$rr; bestc=$c; }
+        done
+        if [[ -n $bestc ]]; then printf '%s' "$bestc"
+        else _livery_hsl_to_hex "$hh" 70 35; fi
+      }
+      # The suggestion names high-contrast-dark, so the light text those slots
+      # must hold is that theme's ansi7 -- not whichever project _livery_resolve
+      # happened to leave in _LIVERY_T while scoring the candidates above.
+      _livery_load_theme high-contrast-dark 2>/dev/null || true
       slot4=$(_livery_solve_slot "$nhue")
+      slot4n=$(_livery_solve_on_color_slot "$nhue")
       # A fixed offset is unreliable: a red opposite a blue lightens to pale
       # pink and ends up close to the path colour. Try several and measure.
       local -a c2s=() offs=(100 130 160 190 220)
@@ -880,11 +1402,15 @@ livery() {
           printf "%s", b }')
 
       printf '\n  rule ~%s  theme=high-contrast-dark accent=#%s lightness=%s ansi4=#%s ansi12=#%s ansi2=#%s ansi10=#%s\n\n' \
-        "${target#$HOME}" "$naccent" "$nL" "$slot4" "$slot4" "$slot2" "$slot2"
+        "${target#$HOME}" "$naccent" "$nL" "$slot4n" "$slot4" "$slot2" "$slot2"
       printf '  background  #%s   dE %s from the nearest (%s)\n' "$newbg" "$nde" "${exnm[$((nearidx-1))]:-none}"
-      local c4 c2
+      local c4 c2 c4n o4n
       c4=$(_livery_contrast "$slot4" "$newbg"); c2=$(_livery_contrast "$slot2" "$newbg")
-      printf '  path        #%s   %s.%02d:1\n' "$slot4" "$((c4/100))" "$((c4%100))"
+      c4n=$(_livery_contrast "$slot4n" "$newbg")
+      o4n=$(_livery_contrast "$slot4n" "$(_livery_on_color_fg)")
+      printf '  path        #%s   %s.%02d:1   (ansi12, the bright bank)\n' "$slot4" "$((c4/100))" "$((c4%100))"
+      printf '  plain blue  #%s   %s.%02d:1   (ansi4, holds light text at %s.%02d:1)\n' \
+        "$slot4n" "$((c4n/100))" "$((c4n%100))" "$((o4n/100))" "$((o4n%100))"
       printf '  user@host   #%s   %s.%02d:1\n' "$slot2" "$((c2/100))" "$((c2%100))"
       if [[ -n $brand ]]; then
         local rot=$(( nhue > bhue ? nhue - bhue : bhue - nhue ))
@@ -892,7 +1418,7 @@ livery() {
         printf '  brand hue %s rotated %s degrees to clear the configured set\n' "$bhue" "$rot"
       fi
       printf '\n  paste into %s, then run `livery audit`.\n' "$LIVERY_CONF"
-      unset -f _livery_solve_slot
+      unset -f _livery_solve_slot _livery_solve_on_color_slot
       ;;
     preview)
       # Swatches use SGR (in-band text colour), not OSC, so this only prints
@@ -927,6 +1453,9 @@ livery() {
       _livery_load_conf
       _LIVERY_DEFAULT_BG=                       # the config may have changed default_bg
       if [[ $_LIVERY_O_enable == on ]]; then
+        if [[ $_LIVERY_O_auto == on && $_LIVERY_O_auto_contrast == on ]]; then
+          _livery_load_profile_cache || true    # cache only: a query here would
+        fi                                      # read the live project's palette
         [[ $_LIVERY_O_title == on ]] && _livery_install_title || _livery_remove_title
         _livery_init_default_bg || true
         _LIVERY_LAST_PWD=; _livery_hook
@@ -945,8 +1474,22 @@ livery() {
         *)   printf 'tab title: %s   (livery title on|off)\n' "$_LIVERY_O_title" ;;
       esac ;;
     reset)  _livery_reset ;;
-    forget) rm -f "$LIVERY_CACHE/default_bg"; _LIVERY_DEFAULT_BG=; _livery_init_default_bg || true
-            printf 'livery: default-bg cache cleared, re-read as %s\n' "$(_livery_fmt "${_LIVERY_DEFAULT_BG:-}" '<query failed>')" ;;
+    forget)
+      # Both caches describe the terminal profile, so a profile change
+      # invalidates both. Reset the palette before re-reading it, or the
+      # snapshot records the current project instead of the profile.
+      rm -f "$LIVERY_CACHE/default_bg" "$(_livery_profile_cache)"
+      _LIVERY_DEFAULT_BG=; _LIVERY_P=()
+      _LIVERY_CUR_BG=; _livery_reset
+      _livery_init_default_bg || true
+      printf 'livery: default-bg cache cleared, re-read as %s\n' \
+        "$(_livery_fmt "${_LIVERY_DEFAULT_BG:-}" '<query failed>')"
+      if [[ $_LIVERY_O_auto == on && $_LIVERY_O_auto_contrast == on ]]; then
+        _livery_init_profile_palette || true
+        printf 'livery: profile palette re-read, %s of %s slots\n' \
+          "${#_LIVERY_P[@]}" "${#_LIVERY_PROFILE_SLOTS[@]}"
+      fi
+      _LIVERY_LAST_PWD=; _livery_hook ;;
     demo)
       local a c prev
       printf 'Fading through the palette at lightness=%s. Watch the background.\n' "$_LIVERY_O_lightness"
@@ -970,6 +1513,12 @@ _livery_init_sleepfd                 # must happen here, not in PROMPT_COMMAND
 if [[ $_LIVERY_O_enable == on ]]; then
   [[ $_LIVERY_O_title == on ]] && _livery_install_title
   _livery_init_default_bg || true    # learn the profile default before any color is set
+  # Same reason and same timing: the profile's own text colours can only be read
+  # while they are still on screen, before any project's palette is applied.
+  # Cached on disk, so only the first shell on a machine pays for the queries.
+  if [[ $_LIVERY_O_auto == on && $_LIVERY_O_auto_contrast == on ]]; then
+    _livery_init_profile_palette || true
+  fi
 fi                                   # disabled: touch nothing, not even a query
 case "${PROMPT_COMMAND:-}" in
   *_livery_hook*) ;;                                    # already installed
