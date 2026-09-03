@@ -80,7 +80,7 @@ set min_contrast 700        # `livery test` flags anything under 7.00:1
 rule ~/projects/foo   theme=high-contrast-dark
 rule ~/projects/bar   theme=high-contrast-dark accent=#e06c75
 rule ~/projects/baz   accent=#61afef lightness=8
-rule ~/work/prod      bg=#2a0708 fg=#ffd7d7 ansi4=#ff9aa2 cursor=#ff5555
+rule ~/work/prod      bg=#2a0708 fg=#ffd7d7 ansi4=#ff5b66 cursor=#ff7575
 ```
 
 Longest matching path prefix wins, so a rule on a subdirectory overrides its

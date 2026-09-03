@@ -129,4 +129,4 @@ rule ~/projects/epsilon  theme=high-contrast-dark accent=#0014A4 lightness=10 an
 
 # A deliberately loud, unmissable scheme — the reason to have explicit rules
 # at all. Anything you must not fat-finger gets its own alarming color.
-# rule ~/projects/some-prod-checkout  bg=#2a0708 fg=#ffd7d7 ansi4=#ff9aa2 cursor=#ff5555
+# rule ~/projects/some-prod-checkout  bg=#2a0708 fg=#ffd7d7 ansi4=#ff5b66 cursor=#ff7575

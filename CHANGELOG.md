@@ -73,6 +73,12 @@ Initial public release.
   exempting them from `min_contrast` the way `ansi0`/`ansi8` are exempt as
   structural. `livery audit` reports the worst of each role separately; one
   combined figure would call a palette clean while half of it was unreadable.
+- The `~/work/prod` example in the README and `livery.conf.example` set
+  `ansi4=#ff9aa2`, the same pale pink this release moves `ansi1` off: pasted as
+  written it measured 2.02:1 under white text. It is now `#ff5b66` at 3.03:1.
+  Its `cursor=#ff5555` was also below `min_contrast` at 5.90:1, and is now
+  `#ff7575` at 7.11:1. Every rule example in both files is checked by
+  `livery test`.
 - `livery preview` draws the path and `user@host` swatches from `ansi12` and
   `ansi10`, falling back to the normal slot when only that one is set. `PS1`
   paints both bold, so with `bold-is-bright` on they render from the bright
