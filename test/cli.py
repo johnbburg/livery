@@ -132,6 +132,26 @@ def main():
         s2 = rep.get('stray', '')
         chk('draws a swatch per rule', 2, s2.count('user@host'))
         chk('uses truecolor background SGR', True, '48;2;' in s2)
+        # PS1 paints the path bold (01;34), so with bold-is-bright on it renders
+        # from ansi12. The preview has to show that, not the darker ansi4 the
+        # normal bank now holds, or it misrepresents the prompt it is previewing.
+        prevconf2 = os.path.join(root, 'conf-prev2')
+        write(prevconf2, f'set default_bg #300a24\nset auto off\n'
+                         f'rule {root}/proj accent=#61afef '
+                         f'ansi4=#1d75c7 ansi12=#67ade9 '
+                         f'ansi2=#137e85 ansi10=#1bb8c0\n')
+        drvp2 = os.path.join(root, 'prev2.sh')
+        write(drvp2, 'source "$LIVERY_SH"\nlivery preview\n')
+        repp2, err = run(drvp2, {'LIVERY_CONF': prevconf2})
+        if repp2 is None:
+            print('  harness failed:', err); return 1
+        s2b = repp2.get('stray', '')
+        chk('path swatch uses ansi12, not ansi4', True,
+            '38;2;103;173;233' in s2b)          # #67ade9
+        chk('path swatch is not the dark ansi4', False,
+            '38;2;29;117;199' in s2b)           # #1d75c7
+        chk('user@host swatch uses ansi10', True,
+            '38;2;27;184;192' in s2b)           # #1bb8c0
         chk('resets colour after each swatch', True, '[0m' in s2)
         # the important one: preview must not touch the terminal's real colours
         chk('emits no OSC at all', 1, len(rep['frames']['bg']))

@@ -1434,7 +1434,13 @@ livery() {
         bg="${_LIVERY_T[bg]:-}"; [[ -z $bg ]] && continue
         lbl="${_LIVERY_R_label:-$p}"
         fg="${_LIVERY_T[fg]:-ffffff}"
-        a2="${_LIVERY_T[ansi2]:-$fg}"; a4="${_LIVERY_T[ansi4]:-$fg}"
+        # PS1 paints these bold (01;32, 01;34), so with bold-is-bright on they
+        # render from the bright bank. Preview what the prompt actually shows,
+        # not the normal-bank slots -- those now hold a darker value, because a
+        # program can paint them as a background. Fall back to the normal slot
+        # for a rule that sets only that one, or a profile with the setting off.
+        a2="${_LIVERY_T[ansi10]:-${_LIVERY_T[ansi2]:-$fg}}"
+        a4="${_LIVERY_T[ansi12]:-${_LIVERY_T[ansi4]:-$fg}}"
         read -r r g b <<<"$(_livery_rgb "$bg")"
         printf '\033[48;2;%s;%s;%sm ' "$r" "$g" "$b"
         read -r fr fg2 fb <<<"$(_livery_rgb "$a2")"

@@ -73,6 +73,11 @@ Initial public release.
   exempting them from `min_contrast` the way `ansi0`/`ansi8` are exempt as
   structural. `livery audit` reports the worst of each role separately; one
   combined figure would call a palette clean while half of it was unreadable.
+- `livery preview` draws the path and `user@host` swatches from `ansi12` and
+  `ansi10`, falling back to the normal slot when only that one is set. `PS1`
+  paints both bold, so with `bold-is-bright` on they render from the bright
+  bank; drawing them from the normal bank showed the darker two-sided value
+  rather than the prompt it is previewing.
 - `livery suggest` solves `ansi4` and `ansi12` separately rather than handing
   the same bright value to both: `ansi12` takes the prompt path, `ansi4` takes
   the darkest-but-most-contrasting value at that hue which still holds light
