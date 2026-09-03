@@ -224,6 +224,18 @@ if [[ -r $_THEME ]]; then
   _terr=$(_livery_contrast "$_t7" "$_t1")
   if (( ${_terr:-0} >= 300 )); then pass=$((pass+1)); printf '  ok   %-42s %s\n' "theme error block is readable" "$_terr"
   else fail=$((fail+1)); printf '  FAIL %-42s %s < 300\n' "theme error block is readable" "$_terr"; fi
+  # The light bank carries black text (fg=black;bg=green), and that direction
+  # is left without a ceiling on the grounds that the text floor already
+  # implies it -- both want a lighter colour. Guard the claim: if it ever stops
+  # holding, these slots need a floor of their own.
+  _t0=$(_livery_hex "$(awk '$1=="ansi0"{print $2}' $_THEME)")
+  for _k in ansi2 ansi3 ansi6 ansi7; do
+    _tv=$(_livery_hex "$(awk -v k="$_k" '$1==k{print $2}' $_THEME)")
+    _tb=$(_livery_contrast "$_tv" "$_t0")
+    if (( ${_tb:-0} >= 300 )); then pass=$((pass+1)); printf '  ok   %-42s %s\n' "theme $_k holds black text" "$_tb"
+    else fail=$((fail+1)); printf '  FAIL %-42s %s < 300\n' "theme $_k holds black text" "$_tb"; fi
+  done
+
   # and it must not have bought that by making the text role unreadable
   for _k in ansi1 ansi2 ansi3 ansi4 ansi5 ansi6 ansi7; do
     _tv=$(_livery_hex "$(awk -v k="$_k" '$1==k{print $2}' $_THEME)")

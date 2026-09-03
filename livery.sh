@@ -36,9 +36,18 @@ _livery_defaults() {
 # These are the slots programs pair with *light* text, so they have a ceiling as
 # well as a floor. Symfony Console's error block -- composer, drush, every
 # Drupal tool -- emits `\e[37;41m`, ansi7 on ansi1; its debug formatter emits
-# `bg=blue;fg=white`. Green, yellow and cyan are omitted because the convention
-# pairs them with black text instead (`fg=black;bg=green`), which their
-# lightness already suits, and ansi7 because it *is* the light text.
+# `bg=blue;fg=white`. ansi7 is omitted because it *is* the light text.
+#
+# Green, yellow and cyan are omitted for a stronger reason than convention:
+# their pairing is black text (`fg=black;bg=green`, `fg=black;bg=yellow`), and
+# that direction needs no ceiling because it does not oppose the text floor.
+# Both constraints want a lighter colour, so clearing one clears the other.
+# Swept exhaustively over hue, saturation and lightness against the shipped
+# theme's background: of the 65016 values that clear min_contrast at 7:1 as
+# text, the worst holds ansi0 at 5.55:1, well above this floor. Only the
+# light-text direction pulls against the text floor, so only it needs a
+# ceiling -- constraining the light bank as well would cost text contrast to
+# fix nothing. `livery test` guards the claim rather than restating it.
 #
 # The bright bank is omitted: `\e[101m`-style bright backgrounds are rare enough
 # that constraining ansi9..ansi15 would cost text contrast for nothing.
